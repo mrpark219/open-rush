@@ -1,3 +1,14 @@
 spring:
   application:
     name: open-rush
+  datasource:
+    url: jdbc:postgresql://localhost:5432/open_rush
+    username: open_rush
+    password: open_rush
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
