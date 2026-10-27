@@ -1,7 +1,10 @@
-package me.park.openrush.reservation.domain
+package me.park.openrush.reservation.domain.seat
 
 import jakarta.persistence.*
+import me.park.openrush.common.domain.BaseEntity
+import me.park.openrush.common.domain.value.Money
 import me.park.openrush.concert.domain.Performance
+import me.park.openrush.reservation.domain.exception.checkRule
 
 @Entity
 @Table(
@@ -9,12 +12,11 @@ import me.park.openrush.concert.domain.Performance
         UniqueConstraint(name = "uk_performance_seat_number", columnNames = ["performance_id", "seat_number"]),
     ]
 )
-class PerformanceSeat(performance: Performance, seatNumber: SeatNumber, price: Money) {
-    @field:Id
-    @field:GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null
-        protected set
-
+class PerformanceSeat(
+    performance: Performance,
+    seatNumber: SeatNumber,
+    price: Money
+) : BaseEntity() {
     @field:ManyToOne(fetch = FetchType.LAZY, optional = false)
     @field:JoinColumn(name = "performance_id", nullable = false)
     var performance: Performance = performance

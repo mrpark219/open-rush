@@ -1,6 +1,7 @@
 package me.park.openrush.concert.domain
 
 import jakarta.persistence.*
+import me.park.openrush.common.domain.BaseEntity
 
 @Entity
 @Table(name = "concerts")
@@ -8,12 +9,7 @@ class Concert(
     title: String,
     maxTicketsPerUser: Int,
     description: String = ""
-) {
-    @field:Id
-    @field:GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null
-        protected set
-
+) : BaseEntity() {
     @field:Column(nullable = false)
     var title: String = title
         protected set

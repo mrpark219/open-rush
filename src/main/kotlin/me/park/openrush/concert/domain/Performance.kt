@@ -1,6 +1,7 @@
 package me.park.openrush.concert.domain
 
 import jakarta.persistence.*
+import me.park.openrush.common.domain.BaseEntity
 import java.time.Instant
 
 @Entity
@@ -11,12 +12,7 @@ class Performance(
     startsAt: Instant,
     bookingOpensAt: Instant,
     bookingClosesAt: Instant,
-) {
-    @field:Id
-    @field:GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null
-        protected set
-
+) : BaseEntity() {
     @field:ManyToOne(fetch = FetchType.LAZY, optional = false)
     @field:JoinColumn(name = "concert_id", nullable = false)
     var concert: Concert = concert

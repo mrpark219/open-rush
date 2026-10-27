@@ -1,6 +1,9 @@
 package me.park.openrush.reservation.domain
 
+import me.park.openrush.common.domain.value.Money
+import me.park.openrush.reservation.domain.seat.PerformanceSeat
 import jakarta.persistence.*
+import me.park.openrush.common.domain.BaseEntity
 
 @Entity
 @Table(
@@ -8,12 +11,7 @@ import jakarta.persistence.*
         UniqueConstraint(name = "uk_reservation_item_seat", columnNames = ["reservation_id", "performance_seat_id"]),
     ]
 )
-class ReservationItem internal constructor(reservation: Reservation, seat: PerformanceSeat) {
-    @field:Id
-    @field:GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null
-        protected set
-
+class ReservationItem internal constructor(reservation: Reservation, seat: PerformanceSeat) : BaseEntity() {
     @field:ManyToOne(fetch = FetchType.LAZY, optional = false)
     @field:JoinColumn(name = "reservation_id", nullable = false)
     var reservation: Reservation = reservation
