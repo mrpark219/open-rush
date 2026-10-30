@@ -4,6 +4,7 @@ plugins {
     id("org.springframework.boot") version "4.1.1"
     id("io.spring.dependency-management") version "1.1.7"
     kotlin("plugin.jpa") version "2.3.21"
+    kotlin("kapt") version "2.3.21"
 }
 
 group = "me.park"
@@ -21,6 +22,9 @@ repositories {
 }
 
 dependencies {
+    implementation("io.github.openfeign.querydsl:querydsl-jpa:7.1")
+    kapt("io.github.openfeign.querydsl:querydsl-apt:7.1:jpa")
+    kapt("jakarta.persistence:jakarta.persistence-api")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-flyway")
