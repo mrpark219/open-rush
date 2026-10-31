@@ -1,0 +1,18 @@
+server:
+  address: 127.0.0.1
+  port: 18080
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:55432/open_rush_benchmark
+    username: benchmark
+    password: benchmark
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 16
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+      connection-init-sql: SET lock_timeout = '5s'
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics

@@ -1,0 +1,19 @@
+name: open-rush-benchmark
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: open_rush_benchmark
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - benchmark-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark -d open_rush_benchmark"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  benchmark-data:
