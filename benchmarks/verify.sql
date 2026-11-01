@@ -1,10 +1,6 @@
 \set ON_ERROR_STOP on
 
-select case :'scenario'
-    when 'low' then :requests
-    when 'hot' then least(:requests, 16)
-    when 'quota' then least(:requests, 4)
-end as expected \gset
+select (:'summary'::jsonb ->> 'successfulReservations')::integer as expected \gset
 
 with totals as (
     select (select count(*) from reservations) as reservations,

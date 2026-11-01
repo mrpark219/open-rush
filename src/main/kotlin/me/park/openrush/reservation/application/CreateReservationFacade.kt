@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.application
 
 import jakarta.persistence.LockTimeoutException
+import jakarta.persistence.OptimisticLockException
 import jakarta.persistence.PessimisticLockException
 import me.park.openrush.common.exception.ConcurrencyException
 import me.park.openrush.reservation.application.exception.PurchaseQuotaCreationConflict
@@ -21,6 +22,7 @@ class CreateReservationFacade(
             throw when (exception) {
                 is PurchaseQuotaCreationConflict,
                 is ConcurrencyFailureException,
+                is OptimisticLockException,
                 is PessimisticLockException,
                 is LockTimeoutException -> ConcurrencyException(exception)
                 else -> exception

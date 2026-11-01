@@ -7,10 +7,14 @@ const requestCount = positiveInteger(__ENV.REQUESTS || '1000', 'REQUESTS');
 const users = positiveInteger(__ENV.VUS || '16', 'VUS');
 const scenarioName = __ENV.CASE || 'low';
 const scenario = selectScenario(scenarioName);
-const expectedSuccesses = scenario.expectedSuccesses(requestCount);
+const strategy = __ENV.STRATEGY || 'pessimistic';
+if (!['pessimistic', 'optimistic'].includes(strategy)) throw new Error(`Unknown strategy: ${strategy}`);
+const maximumSuccesses = scenario.expectedSuccesses(requestCount);
+const minimumSuccesses = strategy === 'optimistic' && scenarioName === 'quota' ? 1 : maximumSuccesses;
 
 const successes = new Counter('reservation_successes');
 const rejections = new Counter('reservation_rejections');
+const conflicts = new Counter('concurrency_conflicts');
 const unexpectedResponses = new Rate('unexpected_responses');
 
 export const options = {
@@ -24,8 +28,8 @@ export const options = {
   },
   summaryTrendStats: ['avg', 'p(95)', 'p(99)', 'max'],
   thresholds: {
-    reservation_successes: [`count == ${expectedSuccesses}`],
-    reservation_rejections: [`count == ${requestCount - expectedSuccesses}`],
+    reservation_successes: [`count >= ${minimumSuccesses}`, `count <= ${maximumSuccesses}`],
+    concurrency_conflicts: strategy === 'pessimistic' ? ['count == 0'] : ['count >= 0'],
     unexpected_responses: ['rate == 0'],
     iterations: [`count == ${requestCount}`],
   },
@@ -41,11 +45,14 @@ export default function () {
   });
 
   const successful = response.status === 201;
-  const rejected = isBusinessRejection(response);
+  const errorCode = readConflictCode(response);
+  const rejected = errorCode === 'RESERVATION_RULE_VIOLATION';
+  const conflicted = errorCode === 'CONCURRENCY_CONFLICT';
 
   successes.add(successful ? 1 : 0);
   rejections.add(rejected ? 1 : 0);
-  unexpectedResponses.add(!successful && !rejected);
+  conflicts.add(conflicted ? 1 : 0);
+  unexpectedResponses.add(!successful && !rejected && !conflicted);
 }
 
 export function handleSummary(data) {
@@ -53,16 +60,19 @@ export function handleSummary(data) {
   const duration = metrics.http_req_duration.values;
   const summary = {
     scenario: scenarioName,
+    strategy,
     requests: requestCount,
     users,
-    expectedSuccesses,
+    minimumSuccesses,
+    maximumSuccesses,
+    successfulReservations: metrics.reservation_successes.values.count,
     ...data,
   };
 
   return {
     [__ENV.SUMMARY || 'summary.json']: JSON.stringify(summary, null, 2),
     stdout: [
-      `${scenarioName}: ${metrics.reservation_successes.values.count} successes, ${metrics.reservation_rejections.values.count} rejections`,
+      `${scenarioName} (${strategy}): ${metrics.reservation_successes.values.count} successes, ${metrics.reservation_rejections.values.count} rejections, ${metrics.concurrency_conflicts.values.count} conflicts`,
       `RPS ${metrics.http_reqs.values.rate.toFixed(1)} / success RPS ${metrics.reservation_successes.values.rate.toFixed(1)}`,
       `p95 ${duration['p(95)'].toFixed(1)} ms / p99 ${duration['p(99)'].toFixed(1)} ms`,
       `Unexpected responses: ${(metrics.unexpected_responses.values.rate * 100).toFixed(1)}%\n`,
@@ -70,13 +80,13 @@ export function handleSummary(data) {
   };
 }
 
-function isBusinessRejection(response) {
-  if (response.status !== 409) return false;
+function readConflictCode(response) {
+  if (response.status !== 409) return null;
 
   try {
-    return response.json('code') === 'RESERVATION_RULE_VIOLATION';
+    return response.json('code');
   } catch (_) {
-    return false;
+    return null;
   }
 }
 

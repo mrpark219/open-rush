@@ -28,6 +28,11 @@ class ConcertPurchaseQuota(
     var allocatedQuantity: Int = 0
         protected set
 
+    @field:Version
+    @field:Column(nullable = false)
+    var version: Long = 0
+        protected set
+
     init {
         require(userId > 0) { "사용자 ID는 양수여야 합니다." }
     }

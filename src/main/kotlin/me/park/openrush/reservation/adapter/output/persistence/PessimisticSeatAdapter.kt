@@ -9,11 +9,13 @@ import me.park.openrush.reservation.application.port.output.HoldSeatsResult
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import me.park.openrush.reservation.domain.seat.PerformanceSeat
 import me.park.openrush.reservation.domain.seat.QPerformanceSeat.performanceSeat
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
 @Repository
+@ConditionalOnProperty(name = ["reservation.concurrency-strategy"], havingValue = "pessimistic", matchIfMissing = true)
 @Transactional(propagation = Propagation.MANDATORY)
 class PessimisticSeatAdapter(
     private val queryFactory: JPAQueryFactory,
@@ -21,26 +23,25 @@ class PessimisticSeatAdapter(
 ) : HoldPerformanceSeatsPort {
     @Throws(ReservationRuleViolation::class)
     override fun hold(command: HoldSeatsCommand): HoldSeatsResult {
-        val seats = findSeatsForUpdate(command)
+        val seats = findSeats(command)
 
         if (seats.size != command.seatIds.size) {
             throw ReservationRuleViolation("요청한 좌석이 해당 회차에 존재하지 않습니다.")
         }
 
-        seats.forEach(entityManager::refresh)
+        seats.forEach { entityManager.refresh(it, LockModeType.PESSIMISTIC_WRITE) }
         seats.forEach { it.hold(command.reservationId) }
         entityManager.flush()
 
         return HoldSeatsResult(seatIds = seats.map { requireNotNull(it.id) })
     }
 
-    private fun findSeatsForUpdate(command: HoldSeatsCommand): List<PerformanceSeat> = queryFactory
+    private fun findSeats(command: HoldSeatsCommand): List<PerformanceSeat> = queryFactory
         .selectFrom(performanceSeat)
         .where(
             performanceSeat.performance.id.eq(command.performanceId),
             performanceSeat.id.`in`(command.seatIds),
         )
         .orderBy(performanceSeat.id.asc())
-        .setLockMode(LockModeType.PESSIMISTIC_WRITE)
         .fetch()
 }

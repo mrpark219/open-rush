@@ -7,6 +7,12 @@ scenario="${1:-all}"
 requests="${REQUESTS:-1000}"
 users="${VUS:-16}"
 warmup_requests="${WARMUP_REQUESTS:-500}"
+strategy="${STRATEGY:-pessimistic}"
+
+case "$strategy" in
+  pessimistic|optimistic) ;;
+  *) echo 'STRATEGY must be pessimistic or optimistic.' >&2; exit 1 ;;
+esac
 
 case "$scenario" in
   all) scenarios=(low hot quota) ;;
@@ -30,7 +36,7 @@ if curl --silent --output /dev/null --max-time 2 http://localhost:18080/actuator
   exit 1
 fi
 
-output_dir="$repo_dir/build/benchmark/$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S)"
+output_dir="$repo_dir/build/benchmark/$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S)-$strategy"
 mkdir -p "$output_dir"
 existing_database="$("${compose[@]}" ps --status running -q postgres)"
 app_pid=''
@@ -53,7 +59,8 @@ trap 'exit 143' TERM
 bench_java=java
 if [[ -n "${JAVA_HOME:-}" ]]; then bench_java="$JAVA_HOME/bin/java"; fi
 "$bench_java" -Xms512m -Xmx512m -jar "$repo_dir/build/libs/open-rush-0.0.1-SNAPSHOT.jar" \
-  --spring.profiles.active=benchmark >"$output_dir/application.log" 2>&1 &
+  --spring.profiles.active=benchmark --reservation.concurrency-strategy="$strategy" \
+  >"$output_dir/application.log" 2>&1 &
 app_pid=$!
 
 ready=false
@@ -79,12 +86,12 @@ database() {
 run_case() {
   local name="$1" count="$2" label="$3"
   database -v requests="$count" <"$repo_dir/benchmarks/seed.sql"
-  k6 run --quiet -e CASE="$name" -e REQUESTS="$count" -e VUS="$users" \
+  k6 run --quiet -e CASE="$name" -e REQUESTS="$count" -e VUS="$users" -e STRATEGY="$strategy" \
     -e SUMMARY="$output_dir/$label.json" "$repo_dir/benchmarks/reservations.js"
-  database -v scenario="$name" -v requests="$count" <"$repo_dir/benchmarks/verify.sql"
+  database -v summary="$(cat "$output_dir/$label.json")" <"$repo_dir/benchmarks/verify.sql"
 }
 
-echo 'Warmup'
+echo "Strategy: $strategy / Warmup"
 run_case low "$warmup_requests" warmup
 for name in "${scenarios[@]}"; do
   run_case "$name" "$requests" "$name"

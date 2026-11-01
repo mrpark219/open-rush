@@ -40,6 +40,11 @@ class PerformanceSeat(
     var reservationId: Long? = null
         protected set
 
+    @field:Version
+    @field:Column(nullable = false)
+    var version: Long = 0
+        protected set
+
     fun hold(reservationId: Long) {
         require(reservationId > 0) { "저장된 예매 ID가 필요합니다." }
         checkRule(status == SeatStatus.AVAILABLE, "이미 점유된 좌석입니다.")

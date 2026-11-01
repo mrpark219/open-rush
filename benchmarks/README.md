@@ -18,9 +18,10 @@ JDK 25, Docker Compose, k6, curl이 필요합니다.
 
 ```sh
 REQUESTS=3000 VUS=32 ./benchmarks/run.sh hot
+STRATEGY=optimistic ./benchmarks/run.sh
 ```
 
-터미널에 RPS·성공 RPS·p95/p99를 표시합니다. 결과 JSON과 API 로그는 `build/benchmark/<실행시각>/`에 저장합니다. 409 중 정책 거절만 정상으로 집계하며, 오류 응답·성공 수 불일치·DB 정합성 오류는 실행 실패로 처리합니다.
+기본 전략은 `pessimistic`입니다. 터미널에 RPS·성공 RPS·p95/p99·동시성 충돌 수를 표시하고, 결과 JSON과 API 로그는 `build/benchmark/<실행시각>-<전략>/`에 저장합니다. 낙관적 락 충돌은 정책 거절과 별도로 집계합니다. 자동 재시도가 없어 `optimistic`의 `quota` 성공 수는 1~4건일 수 있으며, DB 수량은 실제 성공 응답 수와 일치해야 합니다. 그 외 오류 응답·성공 수 불일치·DB 정합성 오류는 실행 실패로 처리합니다.
 
 `scenarios.js`는 요청 분포, `reservations.js`는 HTTP 호출·측정을 담당합니다. `seed.sql`과 `verify.sql`은 데이터 준비·검증용입니다.
 
