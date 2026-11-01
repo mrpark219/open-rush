@@ -55,7 +55,7 @@ docker compose up -d --wait
 
 | 전략 | 브랜치 | 상태 |
 | --- | --- | --- |
-| 비관적 락 | `decision/001-reservation-concurrency/pessimistic-lock` | 기준 구현 |
+| 비관적 락 | `decision/001-reservation-concurrency/pessimistic-lock` | 기준 구현 · 실측 완료 |
 | 낙관적 락 | `decision/001-reservation-concurrency/optimistic-lock` | 구현 완료 · 브랜치에서 비교 |
 | 조건부 UPDATE | `decision/001-reservation-concurrency/conditional-update` | 준비 · 미구현 |
 
@@ -64,3 +64,5 @@ docker compose up -d --wait
 `main`은 비관적 락 기준 버전을 유지합니다. 낙관적 락 도입 이후의 구현은 실험 브랜치에서만 진행합니다.
 
 현재 브랜치: 비관적 락 기준 구현. `./benchmarks/run.sh`로 측정합니다.
+
+측정 결과: [비관적 락 · 2026-11-02](benchmarks/results/pessimistic-2026-11-02.md)
