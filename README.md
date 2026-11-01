@@ -42,3 +42,23 @@ docker compose up -d --wait
 ```shell
 ./gradlew test
 ```
+
+## Decisions
+
+검토할 문제마다 번호를 부여하고 전략별 브랜치에서 비교합니다. 새 전략은 `main`이 아닌 실험 브랜치에서 개발하고, 최종 선택한 구현만 `main`에 반영합니다.
+
+### 001 · 예매 동시성 제어
+
+상태: 비교 중 · 최종 선택: 미정
+
+공통 분기점: `5a919dd42c1ded595ce9028e1a04e3492cebb1d3` (비관적 락·k6 기준 버전)
+
+| 전략 | 브랜치 | 상태 |
+| --- | --- | --- |
+| 비관적 락 | `decision/001-reservation-concurrency/pessimistic-lock` | 기준 구현 |
+| 낙관적 락 | `decision/001-reservation-concurrency/optimistic-lock` | 구현 완료 · 브랜치에서 비교 |
+| 조건부 UPDATE | `decision/001-reservation-concurrency/conditional-update` | 준비 · 미구현 |
+
+요청 수·동시 사용자·데이터·재시도 정책을 맞춰 정합성, 성공 RPS, p95/p99, 동시성 충돌률을 비교합니다. 결정 후 이 절에 측정 결과와 선택 이유를 기록합니다. 같은 문제를 재검토할 때는 새 번호로 이전 결정을 연결합니다.
+
+`main`은 비관적 락 기준 버전을 유지합니다. 낙관적 락 도입 이후의 구현은 실험 브랜치에서만 진행합니다.
