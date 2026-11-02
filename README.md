@@ -56,7 +56,7 @@ docker compose up -d --wait
 | 전략 | 브랜치 | 상태 |
 | --- | --- | --- |
 | 비관적 락 | `decision/001-reservation-concurrency/pessimistic-lock` | 기준 구현 |
-| 낙관적 락 | `decision/001-reservation-concurrency/optimistic-lock` | 구현 완료 · 브랜치에서 비교 |
+| 낙관적 락 | `decision/001-reservation-concurrency/optimistic-lock` | 구현 완료 · 실측 완료 |
 | 조건부 UPDATE | `decision/001-reservation-concurrency/conditional-update` | 준비 · 미구현 |
 
 요청 수·동시 사용자·데이터·재시도 정책을 맞춰 정합성, 성공 RPS, p95/p99, 동시성 충돌률을 비교합니다. 결정 후 이 절에 측정 결과와 선택 이유를 기록합니다. 같은 문제를 재검토할 때는 새 번호로 이전 결정을 연결합니다.
@@ -69,3 +69,5 @@ docker compose up -d --wait
 ./gradlew bootRun --args='--reservation.concurrency-strategy=optimistic'
 STRATEGY=optimistic ./benchmarks/run.sh
 ```
+
+측정 결과: [낙관적 락 · 2026-11-02](benchmarks/results/optimistic-2026-11-02.md)
