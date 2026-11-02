@@ -104,7 +104,7 @@ class OptimisticReservationConcurrencyIntegrationTest : ReservationConcurrencyTe
     }
 
     @Test
-    fun `구매 한도 버전 충돌은 재시도 없이 공통 동시성 예외로 반환한다`() {
+    fun `구매 한도 버전 충돌은 새 트랜잭션으로 재시도하여 성공한다`() {
         createEmptyQuota()
         val executor = Executors.newSingleThreadExecutor()
 
@@ -118,18 +118,18 @@ class OptimisticReservationConcurrencyIntegrationTest : ReservationConcurrencyTe
                 val savedWinner = saveReservationPort.save(winner)
                 holdSeatsPort.hold(HoldSeatsCommand.from(savedWinner))
 
-                val pending = executor.submit<Throwable?> {
-                    runCatching { reservations.create(command(1, listOf(seatIds[1]))) }.exceptionOrNull()
+                val pending = executor.submit<CreateReservationResult> {
+                    reservations.create(command(1, listOf(seatIds[1])))
                 }
                 awaitQuotaUpdateWaitingForCommit()
 
                 pending
             }
 
-            val failure = assertIs<ConcurrencyException>(checkNotNull(loser).get(15, TimeUnit.SECONDS))
-            assertIs<OptimisticLockingFailureException>(failure.cause)
-            assertEquals(1, count("select version from concert_purchase_quotas where user_id = 1"))
-            assertConsistent(1, 1)
+            val retriedReservation = checkNotNull(loser).get(15, TimeUnit.SECONDS)
+            assertEquals(listOf(seatIds[1]), retriedReservation.seatIds)
+            assertEquals(2, count("select version from concert_purchase_quotas where user_id = 1"))
+            assertConsistent(2, 2)
         } finally {
             executor.shutdownNow()
             check(executor.awaitTermination(15, TimeUnit.SECONDS))

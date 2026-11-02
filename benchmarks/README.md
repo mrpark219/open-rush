@@ -21,7 +21,7 @@ REQUESTS=3000 VUS=32 ./benchmarks/run.sh hot
 STRATEGY=optimistic ./benchmarks/run.sh
 ```
 
-기본 전략은 `pessimistic`입니다. 터미널에 RPS·성공 RPS·p95/p99·동시성 충돌 수를 표시하고, 결과 JSON과 API 로그는 `build/benchmark/<실행시각>-<전략>/`에 저장합니다. 낙관적 락 충돌은 정책 거절과 별도로 집계합니다. 자동 재시도가 없어 `optimistic`의 `quota` 성공 수는 1~4건일 수 있으며, DB 수량은 실제 성공 응답 수와 일치해야 합니다. 그 외 오류 응답·성공 수 불일치·DB 정합성 오류는 실행 실패로 처리합니다.
+기본 전략은 `pessimistic`입니다. 터미널에 RPS·성공 RPS·p95/p99·동시성 충돌 수를 표시하고, 결과 JSON과 API 로그는 `build/benchmark/<실행시각>-<전략>/`에 저장합니다. 낙관적 락 충돌은 새 트랜잭션으로 최대 3회 재시도하며, 이후에도 실패한 요청을 동시성 충돌로 집계합니다. 구매 한도 최초 생성 충돌은 1회만 재시도하고 전체 재시도 한도에 포함합니다. `optimistic`의 `quota` 성공 수는 1~4건일 수 있으며, DB 수량은 실제 성공 응답 수와 일치해야 합니다. 그 외 오류 응답·성공 수 불일치·DB 정합성 오류는 실행 실패로 처리합니다.
 
 `scenarios.js`는 요청 분포, `reservations.js`는 HTTP 호출·측정을 담당합니다. `seed.sql`과 `verify.sql`은 데이터 준비·검증용입니다.
 

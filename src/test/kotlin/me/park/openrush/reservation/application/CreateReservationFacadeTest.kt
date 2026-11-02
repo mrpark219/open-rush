@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.application
 
 import jakarta.persistence.PessimisticLockException
+import jakarta.persistence.OptimisticLockException
 import me.park.openrush.common.exception.ConcurrencyException
 import me.park.openrush.reservation.application.exception.PurchaseQuotaCreationConflict
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
@@ -13,11 +14,52 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.dao.OptimisticLockingFailureException
 import java.time.Instant
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
 class CreateReservationFacadeTest {
+    @Test
+    fun `낙관적 락 충돌은 최대 세 번 재시도하고 성공 결과를 반환한다`() {
+        val conflict = OptimisticLockingFailureException("버전 충돌")
+        `when`(service.create(command)).thenThrow(conflict, conflict, conflict).thenReturn(result)
+
+        assertSame(result, facade.create(command))
+        verify(service, times(4)).create(command)
+    }
+
+    @Test
+    fun `세 번 재시도한 뒤에도 충돌하면 공통 동시성 예외로 반환한다`() {
+        val conflict = OptimisticLockException("버전 충돌")
+        `when`(service.create(command)).thenThrow(conflict)
+
+        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
+
+        assertSame(conflict, exception.cause)
+        verify(service, times(4)).create(command)
+    }
+
+    @Test
+    fun `구매 한도 생성 충돌도 전체 재시도 한도에 포함한다`() {
+        val creationConflict = PurchaseQuotaCreationConflict(RuntimeException())
+        val versionConflict = OptimisticLockingFailureException("버전 충돌")
+        `when`(service.create(command)).thenThrow(creationConflict, versionConflict, versionConflict, versionConflict)
+
+        assertFailsWith<ConcurrencyException> { facade.create(command) }
+        verify(service, times(4)).create(command)
+    }
+
+    @Test
+    fun `재시도 중 정책 거절이 발생하면 즉시 중단한다`() {
+        val conflict = OptimisticLockingFailureException("버전 충돌")
+        val rejection = ReservationRuleViolation("이미 선점된 좌석")
+        `when`(service.create(command)).thenThrow(conflict, rejection)
+
+        assertSame(rejection, assertFailsWith<ReservationRuleViolation> { facade.create(command) })
+        verify(service, times(2)).create(command)
+    }
+
     @Test
     fun `구매 한도 생성 충돌만 한 번 재시도한다`() {
         val conflict = PurchaseQuotaCreationConflict(RuntimeException())
