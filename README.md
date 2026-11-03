@@ -57,8 +57,16 @@ docker compose up -d --wait
 | --- | --- | --- |
 | 비관적 락 | `decision/001-reservation-concurrency/pessimistic-lock` | 기준 구현 |
 | 낙관적 락 | `decision/001-reservation-concurrency/optimistic-lock` | 구현 완료 · 브랜치에서 비교 |
-| 조건부 UPDATE | `decision/001-reservation-concurrency/conditional-update` | 준비 · 미구현 |
+| 조건부 UPDATE | `decision/001-reservation-concurrency/conditional-update` | 구현 · 성능 측정 전 |
 
 요청 수·동시 사용자·데이터·재시도 정책을 맞춰 정합성, 성공 RPS, p95/p99, 동시성 충돌률을 비교합니다. 결정 후 이 절에 측정 결과와 선택 이유를 기록합니다. 같은 문제를 재검토할 때는 새 번호로 이전 결정을 연결합니다.
 
 `main`은 비관적 락 기준 버전을 유지합니다. 낙관적 락 도입 이후의 구현은 실험 브랜치에서만 진행합니다.
+
+### 조건부 UPDATE 구현
+
+좌석은 `status = AVAILABLE`인 행만 `HELD`로 갱신하고, 구매 한도는 `allocated_quantity <= maxTicketsPerUser - quantity`인 행만 수량을 더합니다. UPDATE 결과가 1행이 아니면 정책 위반으로 거절합니다. 좌석을 ID 오름차순으로 하나씩 갱신하고, 하나라도 실패하면 예매·앞서 선점한 좌석·구매 한도를 같은 트랜잭션에서 모두 롤백합니다.
+
+벌크 UPDATE 전에 변경 사항을 flush하고 갱신 대상 엔티티를 영속성 컨텍스트에서 분리합니다. 수정 시각은 UPDATE에서 직접 기록합니다. 구매 한도 최초 생성 충돌은 기존과 동일하게 새 트랜잭션으로 1회 재시도하고, 정책 위반은 재시도하지 않습니다. SELECT FOR UPDATE는 사용하지 않으며 UPDATE 시 DB의 행 잠금은 발생합니다.
+
+동일 좌석 경쟁, 구매 한도 최초 생성·기존 행 경쟁, 회차 간 한도 공유, 부분 선점 롤백과 재조회는 PostgreSQL 통합 테스트로 검증합니다. 성능 측정은 기존 k6 시나리오를 사용합니다.
