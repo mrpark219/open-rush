@@ -24,4 +24,4 @@ REQUESTS=3000 VUS=32 ./benchmarks/run.sh hot
 
 `scenarios.js`는 요청 분포, `reservations.js`는 HTTP 호출·측정을 담당합니다. `seed.sql`과 `verify.sql`은 데이터 준비·검증용입니다.
 
-`hot`과 `quota`는 소진 후 거절이 대부분이므로 전체 RPS를 지속적인 선점 처리량으로 해석하지 않습니다. [이전 측정 기록](../docs/benchmarks/2026-10-30-pessimistic.md)
+`hot`과 `quota`는 소진 후 거절이 대부분이므로 전체 RPS를 지속적인 선점 처리량으로 해석하지 않습니다. [조건부 UPDATE 측정 결과](results/conditional-update-2026-11-03.md)
