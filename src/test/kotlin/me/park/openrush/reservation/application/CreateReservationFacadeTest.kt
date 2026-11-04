@@ -21,63 +21,37 @@ import kotlin.test.assertSame
 
 class CreateReservationFacadeTest {
     @Test
-    fun `낙관적 락 충돌은 최대 세 번 재시도하고 성공 결과를 반환한다`() {
-        val conflict = OptimisticLockingFailureException("버전 충돌")
-        `when`(service.create(command)).thenThrow(conflict, conflict, conflict).thenReturn(result)
-
+    fun `성공하면 트랜잭션을 한 번만 호출한다`() {
+        `when`(service.create(command)).thenReturn(result)
         assertSame(result, facade.create(command))
-        verify(service, times(4)).create(command)
+        verify(service, times(1)).create(command)
     }
 
     @Test
-    fun `세 번 재시도한 뒤에도 충돌하면 공통 동시성 예외로 반환한다`() {
-        val conflict = OptimisticLockException("버전 충돌")
-        `when`(service.create(command)).thenThrow(conflict)
-
-        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
-
-        assertSame(conflict, exception.cause)
-        verify(service, times(4)).create(command)
-    }
-
-    @Test
-    fun `구매 한도 생성 충돌도 전체 재시도 한도에 포함한다`() {
-        val creationConflict = PurchaseQuotaCreationConflict(RuntimeException())
-        val versionConflict = OptimisticLockingFailureException("버전 충돌")
-        `when`(service.create(command)).thenThrow(creationConflict, versionConflict, versionConflict, versionConflict)
-
-        assertFailsWith<ConcurrencyException> { facade.create(command) }
-        verify(service, times(4)).create(command)
-    }
-
-    @Test
-    fun `재시도 중 정책 거절이 발생하면 즉시 중단한다`() {
+    fun `Spring 버전 충돌은 재시도하지 않고 실패한다`() {
         val conflict = OptimisticLockingFailureException("버전 충돌")
-        val rejection = ReservationRuleViolation("이미 선점된 좌석")
-        `when`(service.create(command)).thenThrow(conflict, rejection)
-
-        assertSame(rejection, assertFailsWith<ReservationRuleViolation> { facade.create(command) })
-        verify(service, times(2)).create(command)
+        `when`(service.create(command)).thenThrow(conflict).thenReturn(result)
+        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
+        assertSame(conflict, exception.cause)
+        verify(service, times(1)).create(command)
     }
 
     @Test
-    fun `구매 한도 생성 충돌만 한 번 재시도한다`() {
+    fun `JPA 버전 충돌은 재시도하지 않고 실패한다`() {
+        val conflict = OptimisticLockException("버전 충돌")
+        `when`(service.create(command)).thenThrow(conflict).thenReturn(result)
+        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
+        assertSame(conflict, exception.cause)
+        verify(service, times(1)).create(command)
+    }
+
+    @Test
+    fun `구매 한도 최초 생성 충돌도 재시도하지 않는다`() {
         val conflict = PurchaseQuotaCreationConflict(RuntimeException())
         `when`(service.create(command)).thenThrow(conflict).thenReturn(result)
-
-        assertSame(result, facade.create(command))
-        verify(service, times(2)).create(command)
-    }
-
-    @Test
-    fun `두 번째 구매 한도 생성 충돌은 재시도하지 않고 동시성 예외로 반환한다`() {
-        val conflict = PurchaseQuotaCreationConflict(RuntimeException())
-        `when`(service.create(command)).thenThrow(conflict)
-
         val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
-
         assertSame(conflict, exception.cause)
-        verify(service, times(2)).create(command)
+        verify(service, times(1)).create(command)
     }
 
     @Test

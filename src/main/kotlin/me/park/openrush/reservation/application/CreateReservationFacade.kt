@@ -9,7 +9,6 @@ import me.park.openrush.reservation.application.port.input.CreateReservationComm
 import me.park.openrush.reservation.application.port.input.CreateReservationResult
 import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
 import org.springframework.dao.ConcurrencyFailureException
-import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.stereotype.Service
 
 @Service
@@ -18,7 +17,7 @@ class CreateReservationFacade(
 ) : CreateReservationUseCase {
     override fun create(command: CreateReservationCommand): CreateReservationResult {
         try {
-            return createWithRetry(command)
+            return createReservationService.create(command)
         } catch (exception: RuntimeException) {
             throw when (exception) {
                 is PurchaseQuotaCreationConflict,
@@ -31,30 +30,4 @@ class CreateReservationFacade(
         }
     }
 
-    private fun createWithRetry(command: CreateReservationCommand): CreateReservationResult {
-        var retryCount = 0
-        var quotaCreationRetried = false
-
-        while (true) {
-            try {
-                return createReservationService.create(command)
-            } catch (exception: RuntimeException) {
-                when (exception) {
-                    is OptimisticLockingFailureException, is OptimisticLockException -> Unit
-                    is PurchaseQuotaCreationConflict -> {
-                        if (quotaCreationRetried) throw exception
-                        quotaCreationRetried = true
-                    }
-                    else -> throw exception
-                }
-
-                if (retryCount == MAX_RETRIES) throw exception
-                retryCount++
-            }
-        }
-    }
-
-    private companion object {
-        const val MAX_RETRIES = 3
-    }
 }

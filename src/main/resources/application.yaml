@@ -14,4 +14,4 @@ spring:
     open-in-view: false
 
 reservation:
-  concurrency-strategy: pessimistic
+  concurrency-strategy: optimistic

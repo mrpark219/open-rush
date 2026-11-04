@@ -15,8 +15,10 @@ import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -104,7 +106,7 @@ class OptimisticReservationConcurrencyIntegrationTest : ReservationConcurrencyTe
     }
 
     @Test
-    fun `구매 한도 버전 충돌은 새 트랜잭션으로 재시도하여 성공한다`() {
+    fun `구매 한도 버전 충돌은 재시도 없이 실패하고 다른 좌석은 남는다`() {
         createEmptyQuota()
         val executor = Executors.newSingleThreadExecutor()
 
@@ -126,10 +128,11 @@ class OptimisticReservationConcurrencyIntegrationTest : ReservationConcurrencyTe
                 pending
             }
 
-            val retriedReservation = checkNotNull(loser).get(15, TimeUnit.SECONDS)
-            assertEquals(listOf(seatIds[1]), retriedReservation.seatIds)
-            assertEquals(2, count("select version from concert_purchase_quotas where user_id = 1"))
-            assertConsistent(2, 2)
+            val failure = assertFailsWith<ExecutionException> { checkNotNull(loser).get(15, TimeUnit.SECONDS) }
+            assertIs<ConcurrencyException>(failure.cause)
+            assertEquals("AVAILABLE", jdbc.queryForObject("select status from performance_seats where id = ?", String::class.java, seatIds[1]))
+            assertEquals(1, count("select version from concert_purchase_quotas where user_id = 1"))
+            assertConsistent(1, 1)
         } finally {
             executor.shutdownNow()
             check(executor.awaitTermination(15, TimeUnit.SECONDS))
