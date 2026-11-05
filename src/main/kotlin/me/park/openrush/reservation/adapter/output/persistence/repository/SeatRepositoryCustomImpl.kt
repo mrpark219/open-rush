@@ -13,6 +13,21 @@ class SeatRepositoryCustomImpl(
     private val queryFactory: JPAQueryFactory,
     private val entityManager: EntityManager,
 ) : SeatRepositoryCustom {
+    override fun releaseHeldSeats(reservationId: Long, seatIds: List<Long>, modifiedAt: Instant): Long {
+        val updated = queryFactory.update(performanceSeat)
+            .set(performanceSeat.status, SeatStatus.AVAILABLE)
+            .setNull(performanceSeat.reservationId)
+            .set(performanceSeat.modifiedAt, modifiedAt)
+            .where(
+                performanceSeat.id.`in`(seatIds),
+                performanceSeat.reservationId.eq(reservationId),
+                performanceSeat.status.eq(SeatStatus.HELD),
+            )
+            .execute()
+        seatIds.forEach { entityManager.detach(entityManager.getReference(PerformanceSeat::class.java, it)) }
+        return updated
+    }
+
     override fun findSeats(performanceId: Long, seatIds: List<Long>): List<PerformanceSeat> = queryFactory
         .selectFrom(performanceSeat)
         .where(

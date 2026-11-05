@@ -1,21 +1,29 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
+import java.time.Clock
 import me.park.openrush.reservation.adapter.output.persistence.repository.PurchaseQuotaRepository
 import me.park.openrush.reservation.application.exception.PurchaseQuotaCreationConflict
 import me.park.openrush.reservation.application.port.output.AllocatePurchaseQuotaPort
 import me.park.openrush.reservation.application.port.output.AllocateQuotaCommand
 import me.park.openrush.reservation.application.port.output.AllocateQuotaResult
+import me.park.openrush.reservation.application.port.output.ReleasePurchaseQuotaPort
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import org.hibernate.exception.ConstraintViolationException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Component
-import java.time.Clock
 
 @Component
 class PurchaseQuotaPersistenceAdapter(
     private val purchaseQuotaRepository: PurchaseQuotaRepository,
     private val clock: Clock,
-) : AllocatePurchaseQuotaPort {
+) : AllocatePurchaseQuotaPort, ReleasePurchaseQuotaPort {
+    override fun releaseQuota(userId: Long, concertId: Long, quantity: Int) {
+        require(userId > 0 && concertId > 0 && quantity > 0)
+        check(purchaseQuotaRepository.decreaseIfAllocated(userId, concertId, quantity, clock.instant()) == 1L) {
+            "예매가 확보한 구매 한도를 반환하지 못했습니다."
+        }
+    }
+
     override fun allocate(command: AllocateQuotaCommand): AllocateQuotaResult {
         val quotaId = purchaseQuotaRepository.findQuotaId(command.userId, command.concertId)
             ?: createQuota(command)

@@ -1,18 +1,27 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
+import java.time.Clock
 import me.park.openrush.reservation.adapter.output.persistence.repository.SeatRepository
 import me.park.openrush.reservation.application.port.output.HoldPerformanceSeatsPort
 import me.park.openrush.reservation.application.port.output.HoldSeatsCommand
 import me.park.openrush.reservation.application.port.output.HoldSeatsResult
+import me.park.openrush.reservation.application.port.output.ReleasePerformanceSeatsPort
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import org.springframework.stereotype.Component
-import java.time.Clock
 
 @Component
 class SeatPersistenceAdapter(
     private val seatRepository: SeatRepository,
     private val clock: Clock,
-) : HoldPerformanceSeatsPort {
+) : HoldPerformanceSeatsPort, ReleasePerformanceSeatsPort {
+    override fun releaseSeats(reservationId: Long, seatIds: List<Long>) {
+        require(reservationId > 0 && seatIds.isNotEmpty() && seatIds.all { it > 0 })
+        require(seatIds.distinct().size == seatIds.size)
+        check(seatRepository.releaseHeldSeats(reservationId, seatIds, clock.instant()) == seatIds.size.toLong()) {
+            "예매가 선점한 좌석을 모두 반환하지 못했습니다."
+        }
+    }
+
     override fun hold(command: HoldSeatsCommand): HoldSeatsResult {
         val updated = seatRepository.holdAvailableSeats(
             performanceId = command.performanceId,

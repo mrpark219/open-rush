@@ -1,18 +1,33 @@
 package me.park.openrush.reservation.adapter.input.web
 
 import jakarta.validation.Valid
+import java.net.URI
+import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
+import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
 import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import java.net.URI
 
 @RestController
 @RequestMapping("/reservations")
-class ReservationController(private val reservations: CreateReservationUseCase) {
+class ReservationController(
+    private val reservations: CreateReservationUseCase,
+    private val holdCancellations: CancelReservationHoldUseCase,
+) {
+    @PostMapping("/{reservationId}/cancel-hold")
+    fun cancelHold(
+        @PathVariable reservationId: Long,
+        @Valid @RequestBody request: CancelReservationHoldRequest,
+    ): ResponseEntity<Void> {
+        holdCancellations.cancelHold(CancelReservationHoldCommand(request.userId, reservationId))
+        return ResponseEntity.noContent().build()
+    }
+
     @PostMapping
     fun create(@Valid @RequestBody request: CreateReservationRequest): ResponseEntity<CreateReservationResponse> {
         val command = CreateReservationCommand(

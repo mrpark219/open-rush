@@ -66,11 +66,16 @@ class Reservation private constructor(
         confirmedAt = now
     }
 
-    fun cancel(userId: Long, now: Instant) {
+    fun cancelHold(userId: Long, now: Instant) {
+        validateHoldCancellation(userId, now)
+        status = ReservationStatus.CANCELLED
+    }
+
+    /** 상태를 바꾸지 않고 취소 정책을 검증한다. 동시 요청은 저장 시 조건부 전환으로 검사한다. */
+    fun validateHoldCancellation(userId: Long, now: Instant) {
         requireActive(now)
         checkRule(this.userId == userId, "예약자만 취소할 수 있습니다.")
         checkRule(now < expiresAt, "만료된 예매는 만료 처리해야 합니다.")
-        status = ReservationStatus.CANCELLED
     }
 
     fun expire(now: Instant) {

@@ -13,6 +13,22 @@ class PurchaseQuotaRepositoryCustomImpl(
     private val queryFactory: JPAQueryFactory,
     private val entityManager: EntityManager,
 ) : PurchaseQuotaRepositoryCustom {
+    override fun decreaseIfAllocated(userId: Long, concertId: Long, quantity: Int, modifiedAt: Instant): Long {
+        val updated = queryFactory.update(concertPurchaseQuota)
+            .set(concertPurchaseQuota.allocatedQuantity, concertPurchaseQuota.allocatedQuantity.subtract(quantity))
+            .set(concertPurchaseQuota.modifiedAt, modifiedAt)
+            .where(
+                concertPurchaseQuota.userId.eq(userId),
+                concertPurchaseQuota.concert.id.eq(concertId),
+                concertPurchaseQuota.allocatedQuantity.goe(quantity),
+            )
+            .execute()
+        findQuotaId(userId, concertId)?.let {
+            entityManager.detach(entityManager.getReference(ConcertPurchaseQuota::class.java, it))
+        }
+        return updated
+    }
+
     override fun findQuotaId(userId: Long, concertId: Long): Long? = queryFactory
         .select(concertPurchaseQuota.id)
         .from(concertPurchaseQuota)
