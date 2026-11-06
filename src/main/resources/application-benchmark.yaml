@@ -16,3 +16,6 @@ management:
     web:
       exposure:
         include: health,metrics
+reservation:
+  expiration:
+    enabled: false

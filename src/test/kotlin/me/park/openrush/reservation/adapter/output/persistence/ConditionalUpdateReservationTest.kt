@@ -37,7 +37,7 @@ import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 
 @Import(TestcontainersConfiguration::class, ConditionalUpdateReservationTest.Configuration::class)
-@SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16"])
+@SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16", "reservation.expiration.enabled=false"])
 class ConditionalUpdateReservationTest {
     @Autowired private lateinit var useCase: CreateReservationUseCase
     @Autowired private lateinit var jdbc: JdbcTemplate

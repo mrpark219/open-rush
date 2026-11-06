@@ -1,6 +1,9 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
 import java.time.Instant
+import me.park.openrush.reservation.application.port.output.ExpireHeldReservationPort
+import me.park.openrush.reservation.application.port.output.FindExpiredReservationHoldsPort
+import org.springframework.transaction.annotation.Transactional
 import me.park.openrush.concert.domain.Performance
 import me.park.openrush.reservation.adapter.output.persistence.repository.PerformanceRepository
 import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationRepository
@@ -20,7 +23,17 @@ class ReservationPersistenceAdapter(
     private val performanceRepository: PerformanceRepository,
     private val seatRepository: SeatRepository,
     private val reservationRepository: ReservationRepository,
-) : LoadPerformancePort, LoadPerformanceSeatsPort, SaveReservationPort, LoadReservationPort, CancelHeldReservationPort {
+) : LoadPerformancePort, LoadPerformanceSeatsPort, SaveReservationPort, LoadReservationPort, CancelHeldReservationPort,
+    ExpireHeldReservationPort, FindExpiredReservationHoldsPort {
+    @Transactional(readOnly = true)
+    override fun findExpiredReservationIds(now: Instant, afterId: Long, limit: Int): List<Long> {
+        require(afterId >= 0 && limit > 0)
+        return reservationRepository.findExpiredReservationIds(now, afterId, limit)
+    }
+
+    override fun expireHeld(reservationId: Long, now: Instant): Boolean =
+        reservationRepository.expireIfHeld(reservationId, now) == 1L
+
     override fun findReservation(reservationId: Long): Reservation? =
         reservationRepository.findDetailedById(reservationId)
 

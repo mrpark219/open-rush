@@ -32,7 +32,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 @Import(TestcontainersConfiguration::class, CancelReservationHoldTest.Configuration::class)
-@SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16"])
+@SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16", "reservation.expiration.enabled=false"])
 class CancelReservationHoldTest {
     @Autowired private lateinit var create: CreateReservationUseCase
     @Autowired private lateinit var holdCancellation: CancelReservationHoldUseCase

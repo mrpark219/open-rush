@@ -17,6 +17,32 @@ class ReservationRepositoryCustomImpl(
     private val queryFactory: JPAQueryFactory,
     private val entityManager: EntityManager,
 ) : ReservationRepositoryCustom {
+    override fun findExpiredReservationIds(now: Instant, afterId: Long, limit: Int): List<Long> = queryFactory
+        .select(reservation.id)
+        .from(reservation)
+        .where(
+            reservation.status.eq(ReservationStatus.HELD),
+            reservation.expiresAt.loe(now),
+            reservation.id.gt(afterId),
+        )
+        .orderBy(reservation.id.asc())
+        .limit(limit.toLong())
+        .fetch()
+
+    override fun expireIfHeld(reservationId: Long, now: Instant): Long {
+        val updated = queryFactory.update(reservation)
+            .set(reservation.status, ReservationStatus.EXPIRED)
+            .set(reservation.modifiedAt, now)
+            .where(
+                reservation.id.eq(reservationId),
+                reservation.status.eq(ReservationStatus.HELD),
+                reservation.expiresAt.loe(now),
+            )
+            .execute()
+        entityManager.detach(entityManager.getReference(Reservation::class.java, reservationId))
+        return updated
+    }
+
     override fun findDetailedById(id: Long): Reservation? = queryFactory
         .selectFrom(reservation)
         .distinct()

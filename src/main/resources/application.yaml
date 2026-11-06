@@ -12,3 +12,10 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+reservation:
+  expiration:
+    enabled: true
+    fixed-delay: 10s
+    initial-delay: 10s
+    batch-size: 100
+    lock-timeout-ms: 1000
