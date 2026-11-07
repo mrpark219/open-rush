@@ -53,6 +53,23 @@ class ReservationRepositoryCustomImpl(
         .where(reservation.id.eq(id))
         .fetchOne()
 
+    override fun confirmIfHeld(reservationId: Long, userId: Long, now: Instant): Long {
+        val updated = queryFactory.update(reservation)
+            .set(reservation.status, ReservationStatus.CONFIRMED)
+            .set(reservation.confirmedAt, now)
+            .set(reservation.modifiedAt, now)
+            .where(
+                reservation.id.eq(reservationId),
+                reservation.userId.eq(userId),
+                reservation.status.eq(ReservationStatus.HELD),
+                reservation.heldAt.loe(now),
+                reservation.expiresAt.gt(now),
+            )
+            .execute()
+        entityManager.detach(entityManager.getReference(Reservation::class.java, reservationId))
+        return updated
+    }
+
     override fun cancelIfHeld(reservationId: Long, userId: Long, now: Instant): Long {
         val updated = queryFactory.update(reservation)
             .set(reservation.status, ReservationStatus.CANCELLED)

@@ -9,6 +9,7 @@ import me.park.openrush.reservation.adapter.output.persistence.repository.Perfor
 import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationRepository
 import me.park.openrush.reservation.adapter.output.persistence.repository.SeatRepository
 import me.park.openrush.reservation.application.port.output.CancelHeldReservationPort
+import me.park.openrush.reservation.application.port.output.ConfirmHeldReservationPort
 import me.park.openrush.reservation.application.port.output.LoadPerformancePort
 import me.park.openrush.reservation.application.port.output.LoadPerformanceSeatsPort
 import me.park.openrush.reservation.application.port.output.LoadReservationPort
@@ -24,7 +25,7 @@ class ReservationPersistenceAdapter(
     private val seatRepository: SeatRepository,
     private val reservationRepository: ReservationRepository,
 ) : LoadPerformancePort, LoadPerformanceSeatsPort, SaveReservationPort, LoadReservationPort, CancelHeldReservationPort,
-    ExpireHeldReservationPort, FindExpiredReservationHoldsPort {
+    ExpireHeldReservationPort, FindExpiredReservationHoldsPort, ConfirmHeldReservationPort {
     @Transactional(readOnly = true)
     override fun findExpiredReservationIds(now: Instant, afterId: Long, limit: Int): List<Long> {
         require(afterId >= 0 && limit > 0)
@@ -36,6 +37,12 @@ class ReservationPersistenceAdapter(
 
     override fun findReservation(reservationId: Long): Reservation? =
         reservationRepository.findDetailedById(reservationId)
+
+    override fun confirmHeld(reservationId: Long, userId: Long, now: Instant) {
+        if (reservationRepository.confirmIfHeld(reservationId, userId, now) != 1L) {
+            throw ReservationRuleViolation("확정 가능한 선점 예매가 아닙니다.")
+        }
+    }
 
     override fun cancelHeld(reservationId: Long, userId: Long, now: Instant) {
         if (reservationRepository.cancelIfHeld(reservationId, userId, now) != 1L) {

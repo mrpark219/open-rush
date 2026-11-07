@@ -2,18 +2,28 @@ package me.park.openrush.reservation.adapter.output.persistence
 
 import java.time.Clock
 import me.park.openrush.reservation.adapter.output.persistence.repository.SeatRepository
+import me.park.openrush.reservation.application.port.output.ConfirmPerformanceSeatsPort
 import me.park.openrush.reservation.application.port.output.HoldPerformanceSeatsPort
 import me.park.openrush.reservation.application.port.output.HoldSeatsCommand
 import me.park.openrush.reservation.application.port.output.HoldSeatsResult
 import me.park.openrush.reservation.application.port.output.ReleasePerformanceSeatsPort
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import org.springframework.stereotype.Component
+import java.time.Instant
 
 @Component
 class SeatPersistenceAdapter(
     private val seatRepository: SeatRepository,
     private val clock: Clock,
-) : HoldPerformanceSeatsPort, ReleasePerformanceSeatsPort {
+) : HoldPerformanceSeatsPort, ReleasePerformanceSeatsPort, ConfirmPerformanceSeatsPort {
+    override fun confirmSeats(reservationId: Long, seatIds: List<Long>, confirmedAt: Instant) {
+        require(reservationId > 0 && seatIds.isNotEmpty() && seatIds.all { it > 0 })
+        require(seatIds.distinct().size == seatIds.size)
+        check(seatRepository.confirmHeldSeats(reservationId, seatIds, confirmedAt) == seatIds.size.toLong()) {
+            "예매가 선점한 좌석을 모두 확정하지 못했습니다."
+        }
+    }
+
     override fun releaseSeats(reservationId: Long, seatIds: List<Long>) {
         require(reservationId > 0 && seatIds.isNotEmpty() && seatIds.all { it > 0 })
         require(seatIds.distinct().size == seatIds.size)

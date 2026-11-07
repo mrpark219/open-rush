@@ -10,5 +10,7 @@ interface ReservationRepositoryCustom {
 
     fun findDetailedById(id: Long): Reservation?
 
+    fun confirmIfHeld(reservationId: Long, userId: Long, now: Instant): Long
+
     fun cancelIfHeld(reservationId: Long, userId: Long, now: Instant): Long
 }

@@ -59,11 +59,15 @@ class Reservation private constructor(
         get() = Money(reservationItems.fold(0L) { sum, item -> Math.addExact(sum, item.price.amount) })
 
     fun confirm(userId: Long, now: Instant) {
+        validateConfirmation(userId, now)
+        status = ReservationStatus.CONFIRMED
+        confirmedAt = now
+    }
+
+    fun validateConfirmation(userId: Long, now: Instant) {
         requireActive(now)
         checkRule(this.userId == userId, "예약자만 확정할 수 있습니다.")
         checkRule(now < expiresAt, "만료된 예매입니다.")
-        status = ReservationStatus.CONFIRMED
-        confirmedAt = now
     }
 
     fun cancelHold(userId: Long, now: Instant) {
