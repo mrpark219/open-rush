@@ -18,7 +18,8 @@ class ConfirmReservationService(
     private val confirmPerformanceSeatsPort: ConfirmPerformanceSeatsPort,
     private val clock: Clock,
 ) : ConfirmReservationUseCase {
-    @Transactional
+    // 상태 변경 전 정책 거절은 호출자가 같은 트랜잭션에 결제 결과를 기록할 수 있게 한다.
+    @Transactional(noRollbackFor = [ReservationRuleViolation::class])
     override fun confirm(command: ConfirmReservationCommand) {
         val reservation = loadReservationPort.findReservation(command.reservationId)
             ?: throw ReservationRuleViolation("예매가 존재하지 않습니다.")
