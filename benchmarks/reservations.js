@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import execution from 'k6/execution';
 import { Counter, Rate } from 'k6/metrics';
+import { isBusinessRejection, positiveInteger, post } from './requests.js';
 import { selectScenario } from './scenarios.js';
 
 const requestCount = positiveInteger(__ENV.REQUESTS || '1000', 'REQUESTS');
@@ -35,10 +36,7 @@ http.setResponseCallback(http.expectedStatuses(201, 409));
 
 export default function () {
   const request = scenario.request(execution.scenario.iterationInTest);
-  const response = http.post('http://localhost:18080/reservations', JSON.stringify(request), {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: '15s',
-  });
+  const response = post('/reservations', request);
 
   const successful = response.status === 201;
   const rejected = isBusinessRejection(response);
@@ -68,22 +66,4 @@ export function handleSummary(data) {
       `Unexpected responses: ${(metrics.unexpected_responses.values.rate * 100).toFixed(1)}%\n`,
     ].join('\n'),
   };
-}
-
-function isBusinessRejection(response) {
-  if (response.status !== 409) return false;
-
-  try {
-    return response.json('code') === 'RESERVATION_RULE_VIOLATION';
-  } catch (_) {
-    return false;
-  }
-}
-
-function positiveInteger(value, name) {
-  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-
-  return Number(value);
 }

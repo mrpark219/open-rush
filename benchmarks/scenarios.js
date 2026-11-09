@@ -24,7 +24,7 @@ export function selectScenario(name) {
   return scenarios[name];
 }
 
-function reservation(userId, seatId) {
+export function reservation(userId, seatId) {
   return {
     userId,
     performanceId: seatId % 2 === 1 ? 1 : 2,

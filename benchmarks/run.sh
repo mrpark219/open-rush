@@ -10,8 +10,8 @@ warmup_requests="${WARMUP_REQUESTS:-500}"
 
 case "$scenario" in
   all) scenarios=(low hot quota) ;;
-  low|hot|quota) scenarios=("$scenario") ;;
-  *) echo "Usage: $0 [all|low|hot|quota]" >&2; exit 1 ;;
+  low|hot|quota|rehold) scenarios=("$scenario") ;;
+  *) echo "Usage: $0 [all|low|hot|quota|rehold]" >&2; exit 1 ;;
 esac
 
 for value in "$requests" "$users" "$warmup_requests"; do
@@ -20,6 +20,19 @@ for value in "$requests" "$users" "$warmup_requests"; do
     exit 1
   fi
 done
+
+app_args=(--spring.profiles.active=benchmark)
+warmup_scenario=low
+if [[ "$scenario" == rehold ]]; then
+  if (( requests < 3 || warmup_requests < 3 )); then
+    echo 'rehold requires at least 3 iterations in both REQUESTS and WARMUP_REQUESTS.' >&2
+    exit 1
+  fi
+  warmup_scenario=rehold
+  app_args+=(--reservation.benchmark.rehold-enabled=true --reservation.hold-duration-ms=5000
+    --reservation.expiration.enabled=true --reservation.expiration.fixed-delay=250ms
+    --reservation.expiration.initial-delay=0s)
+fi
 
 for dependency in docker k6 curl java; do
   command -v "$dependency" >/dev/null || { echo "Required: $dependency" >&2; exit 1; }
@@ -53,7 +66,7 @@ trap 'exit 143' TERM
 bench_java=java
 if [[ -n "${JAVA_HOME:-}" ]]; then bench_java="$JAVA_HOME/bin/java"; fi
 "$bench_java" -Xms512m -Xmx512m -jar "$repo_dir/build/libs/open-rush-0.0.1-SNAPSHOT.jar" \
-  --spring.profiles.active=benchmark >"$output_dir/application.log" 2>&1 &
+  "${app_args[@]}" >"$output_dir/application.log" 2>&1 &
 app_pid=$!
 
 ready=false
@@ -79,13 +92,18 @@ database() {
 run_case() {
   local name="$1" count="$2" label="$3"
   database -v requests="$count" <"$repo_dir/benchmarks/seed.sql"
+  local script=reservations.js verifier=verify.sql
+  if [[ "$name" == rehold ]]; then
+    script=rehold.js
+    verifier=verify-rehold.sql
+  fi
   k6 run --quiet -e CASE="$name" -e REQUESTS="$count" -e VUS="$users" \
-    -e SUMMARY="$output_dir/$label.json" "$repo_dir/benchmarks/reservations.js"
-  database -v scenario="$name" -v requests="$count" <"$repo_dir/benchmarks/verify.sql"
+    -e SUMMARY="$output_dir/$label.json" "$repo_dir/benchmarks/$script"
+  database -v scenario="$name" -v requests="$count" <"$repo_dir/benchmarks/$verifier"
 }
 
 echo 'Warmup'
-run_case low "$warmup_requests" warmup
+run_case "$warmup_scenario" "$warmup_requests" warmup
 for name in "${scenarios[@]}"; do
   run_case "$name" "$requests" "$name"
 done

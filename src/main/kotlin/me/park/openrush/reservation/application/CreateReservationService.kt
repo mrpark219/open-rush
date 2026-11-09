@@ -13,10 +13,12 @@ import me.park.openrush.reservation.application.port.output.SaveReservationPort
 import me.park.openrush.reservation.domain.Reservation
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import me.park.openrush.reservation.domain.seat.PerformanceSeat
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
+import java.time.Duration
 
 @Service
 class CreateReservationService(
@@ -26,7 +28,14 @@ class CreateReservationService(
     private val saveReservationPort: SaveReservationPort,
     private val holdPerformanceSeatsPort: HoldPerformanceSeatsPort,
     private val clock: Clock,
+    @Value("\${reservation.hold-duration-ms:300000}") holdDurationMillis: Long,
 ) {
+    private val holdDuration = Duration.ofMillis(holdDurationMillis)
+
+    init {
+        require(holdDurationMillis > 0) { "선점 시간은 양수여야 합니다." }
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun create(command: CreateReservationCommand): CreateReservationResult {
         val performance = loadPerformance(command.performanceId)
@@ -37,6 +46,7 @@ class CreateReservationService(
             userId = command.userId,
             seats = selectedSeats,
             now = clock.instant(),
+            holdDuration = holdDuration,
         )
 
         allocatePurchaseQuotaPort.allocate(AllocateQuotaCommand.from(reservation))
