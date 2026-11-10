@@ -1,9 +1,13 @@
 \set ON_ERROR_STOP on
 
+select :'scenario' in ('queue', 'queue-baseline') as queue_case \gset
+
 select case :'scenario'
     when 'low' then :requests
     when 'hot' then least(:requests, 16)
     when 'quota' then least(:requests, 4)
+    when 'queue' then (select count(*) from reservations)
+    when 'queue-baseline' then (select count(*) from reservations)
 end as expected \gset
 
 with totals as (
@@ -44,7 +48,11 @@ select reservations = :expected and items = :expected
 from totals \gset
 
 \if :consistent
-    \echo 'DB consistency: PASS (expected successes:' :expected ')'
+    \if :queue_case
+        \echo 'DB consistency: PASS (persisted reservations:' :expected ')'
+    \else
+        \echo 'DB consistency: PASS (expected successes:' :expected ')'
+    \endif
 \else
     \echo 'DB consistency: FAIL (expected successes:' :expected ')'
     do $$ begin raise exception 'DB consistency check failed'; end $$;

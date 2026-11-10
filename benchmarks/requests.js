@@ -1,9 +1,9 @@
 import http from 'k6/http';
 
-export function post(path, body) {
+export function post(path, body, { headers = {}, timeout = '15s' } = {}) {
   return http.post(`http://localhost:18080${path}`, body === undefined ? null : JSON.stringify(body), {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: '15s',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    timeout,
   });
 }
 

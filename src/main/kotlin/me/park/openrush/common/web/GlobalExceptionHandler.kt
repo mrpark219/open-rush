@@ -1,6 +1,8 @@
 package me.park.openrush.common.web
 
 import me.park.openrush.common.exception.ConcurrencyException
+import me.park.openrush.reservation.application.QueueError
+import me.park.openrush.reservation.application.QueueException
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -11,6 +13,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
+    @ExceptionHandler(QueueException::class)
+    fun queue(exception: QueueException): ResponseEntity<ErrorResponse> {
+        val status = if (exception.error == QueueError.QUEUE_TICKET_NOT_FOUND) HttpStatus.NOT_FOUND else HttpStatus.TOO_MANY_REQUESTS
+        return ResponseEntity.status(status).body(ErrorResponse(exception.error.name, exception.error.message))
+    }
+
     @ExceptionHandler(ReservationRuleViolation::class)
     fun rule(exception: ReservationRuleViolation): ResponseEntity<ErrorResponse> =
         ResponseEntity.status(HttpStatus.CONFLICT)
