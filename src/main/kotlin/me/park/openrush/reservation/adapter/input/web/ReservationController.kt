@@ -35,13 +35,15 @@ class ReservationController(
     fun create(
         @Valid @RequestBody request: CreateReservationRequest,
         @RequestHeader(name = "X-Queue-Ticket", required = false) queueTicket: String? = null,
+        @RequestHeader(name = "Idempotency-Key", required = false) idempotencyKey: String? = null,
     ): ResponseEntity<CreateReservationResponse> {
         val command = CreateReservationCommand(
             userId = request.userId,
             performanceId = request.performanceId,
             seatIds = request.seatIds,
+            idempotencyKey = idempotencyKey,
         )
-        val result = queue?.consume(command.userId, queueTicket).use { reservations.create(command) }
+        val result = reservations.create(command, queue?.let { { it.consume(command.userId, queueTicket) } })
 
         val response = CreateReservationResponse.from(result)
         val location = URI.create("/reservations/${response.reservationId}")

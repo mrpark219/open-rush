@@ -14,9 +14,14 @@ import org.springframework.stereotype.Service
 class CreateReservationFacade(
     private val createReservationService: CreateReservationService,
 ) : CreateReservationUseCase {
-    override fun create(command: CreateReservationCommand): CreateReservationResult {
+    override fun create(command: CreateReservationCommand, acquireAdmission: (() -> AutoCloseable)?): CreateReservationResult {
+        var permit: AutoCloseable? = null
+        val admit: (() -> Unit)? = acquireAdmission?.let { acquire ->
+            { if (permit == null) permit = acquire() }
+        }
         try {
-            return createWithQuotaCreationRetry(command)
+            if (command.idempotencyKey == null) admit?.invoke()
+            return createWithQuotaCreationRetry(command, admit)
         } catch (exception: RuntimeException) {
             throw when (exception) {
                 is PurchaseQuotaCreationConflict,
@@ -25,13 +30,15 @@ class CreateReservationFacade(
                 is LockTimeoutException -> ConcurrencyException(exception)
                 else -> exception
             }
+        } finally {
+            permit?.close()
         }
     }
 
-    private fun createWithQuotaCreationRetry(command: CreateReservationCommand): CreateReservationResult =
+    private fun createWithQuotaCreationRetry(command: CreateReservationCommand, admit: (() -> Unit)?): CreateReservationResult =
         try {
-            createReservationService.create(command)
+            createReservationService.create(command, admit)
         } catch (_: PurchaseQuotaCreationConflict) {
-            createReservationService.create(command)
+            createReservationService.create(command, admit)
         }
 }

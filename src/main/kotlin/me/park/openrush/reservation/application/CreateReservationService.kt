@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.application
 
 import me.park.openrush.concert.domain.Performance
+import me.park.openrush.reservation.application.exception.ReservationIdempotencyConflict
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
 import me.park.openrush.reservation.application.port.input.CreateReservationResult
 import me.park.openrush.reservation.application.port.output.AllocatePurchaseQuotaPort
@@ -9,6 +10,8 @@ import me.park.openrush.reservation.application.port.output.HoldPerformanceSeats
 import me.park.openrush.reservation.application.port.output.HoldSeatsCommand
 import me.park.openrush.reservation.application.port.output.LoadPerformancePort
 import me.park.openrush.reservation.application.port.output.LoadPerformanceSeatsPort
+import me.park.openrush.reservation.application.port.output.ReservationCreationRecord
+import me.park.openrush.reservation.application.port.output.ReservationCreationRecordPort
 import me.park.openrush.reservation.application.port.output.SaveReservationPort
 import me.park.openrush.reservation.domain.Reservation
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
@@ -27,6 +30,7 @@ class CreateReservationService(
     private val allocatePurchaseQuotaPort: AllocatePurchaseQuotaPort,
     private val saveReservationPort: SaveReservationPort,
     private val holdPerformanceSeatsPort: HoldPerformanceSeatsPort,
+    private val creationRecords: ReservationCreationRecordPort,
     private val clock: Clock,
     @Value("\${reservation.hold-duration-ms:300000}") holdDurationMillis: Long,
 ) {
@@ -37,7 +41,27 @@ class CreateReservationService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun create(command: CreateReservationCommand): CreateReservationResult {
+    fun create(command: CreateReservationCommand, admit: (() -> Unit)? = null): CreateReservationResult {
+        val key = command.idempotencyKey ?: return createNew(command)
+        val request = "${command.performanceId}:${command.seatIds.sorted().joinToString(",")}"
+        creationRecords.find(command.userId, key)?.let { return replay(it, request) }
+
+        admit?.invoke()
+        if (!creationRecords.claim(command.userId, key, request)) {
+            return replay(checkNotNull(creationRecords.find(command.userId, key)), request)
+        }
+
+        val result = createNew(command)
+        creationRecords.complete(command.userId, key, result)
+        return result
+    }
+
+    private fun replay(record: ReservationCreationRecord, request: String): CreateReservationResult {
+        if (record.request != request) throw ReservationIdempotencyConflict()
+        return record.result
+    }
+
+    private fun createNew(command: CreateReservationCommand): CreateReservationResult {
         val performance = loadPerformance(command.performanceId)
         val selectedSeats = loadRequestedSeats(command)
 
