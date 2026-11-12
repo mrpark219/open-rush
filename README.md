@@ -36,6 +36,10 @@ docker compose up -d --wait
 
 키는 공백 없는 ASCII 1~128자입니다. 같은 키를 다른 회차나 좌석에 재사용하면 `409 IDEMPOTENCY_KEY_CONFLICT`를 반환합니다. 실패해 롤백된 요청의 키는 다시 사용할 수 있습니다. 재전달 응답에는 최초 선점 시각과 상태가 들어 있습니다.
 
+## 예매 상세 조회
+
+`GET /reservations/{reservationId}?userId=1`로 예매의 현재 저장 상태, 선점·만료·확정 시각, 좌석 ID와 예매 금액을 조회합니다. 생성 응답의 `Location` 경로에 사용자 ID를 붙여 호출할 수 있습니다. 예매가 없거나 해당 사용자 소유가 아니면 `404`를 반환합니다. 만료 상태는 만료 작업이 처리한 뒤 조회 응답에 반영됩니다.
+
 ## 예매 선점 취소
 
 `POST /reservations/{reservationId}/cancel-hold`에 `{"userId": 1}`을 전달합니다.

@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
@@ -30,6 +31,7 @@ import kotlin.test.assertTrue
     "reservation.queue.admissions-per-second=1000000000"])
 class CreateReservationIdempotencyTest {
     @Autowired private lateinit var controller: ReservationController
+    @Autowired private lateinit var detailsController: ReservationDetailsController
     @Autowired private lateinit var queue: ReservationQueue
     @Autowired private lateinit var create: CreateReservationUseCase
     @Autowired private lateinit var jdbc: JdbcTemplate
@@ -39,7 +41,7 @@ class CreateReservationIdempotencyTest {
 
     @BeforeEach
     fun setUp() {
-        mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(GlobalExceptionHandler()).build()
+        mvc = MockMvcBuilders.standaloneSetup(controller, detailsController).setControllerAdvice(GlobalExceptionHandler()).build()
         jdbc.execute("TRUNCATE concerts CASCADE")
         val concert = id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
         performanceId = id("""INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
@@ -48,6 +50,28 @@ class CreateReservationIdempotencyTest {
             id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
                 VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$number")
         }
+    }
+
+    @Test
+    fun `생성 응답의 Location에서 본인 예매의 최신 상태를 조회한다`() {
+        val response = mvc.perform(request("read", seats.take(2), permit()))
+            .andExpect(status().isCreated).andReturn().response
+        val location = checkNotNull(response.getHeader("Location"))
+
+        mvc.perform(get(location).param("userId", "1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("HELD"))
+            .andExpect(jsonPath("$.totalAmount").value(100000))
+            .andExpect(jsonPath("$.seatIds.length()").value(2))
+        mvc.perform(get(location).param("userId", "2")).andExpect(status().isNotFound)
+        mvc.perform(get("/reservations/${Long.MAX_VALUE}").param("userId", "1")).andExpect(status().isNotFound)
+        mvc.perform(get(location).param("userId", "0")).andExpect(status().isBadRequest)
+
+        mvc.perform(post("$location/cancel-hold").contentType(MediaType.APPLICATION_JSON).content("""{"userId":1}"""))
+            .andExpect(status().isNoContent)
+        mvc.perform(get(location).param("userId", "1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
     }
 
     @Test
