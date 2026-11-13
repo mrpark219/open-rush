@@ -23,7 +23,7 @@ class ExpireReservationHoldsService(
     }
 
     override fun expireHolds(): ExpireReservationHoldsResult {
-        val cutoff = clock.instant()
+        val cutoff = clock.reservationTimestamp()
         var afterId = 0L
         var expired = 0
         var skipped = 0

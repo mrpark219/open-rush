@@ -2,9 +2,8 @@ package me.park.openrush.reservation.adapter.output.persistence
 
 import me.park.openrush.TestcontainersConfiguration
 import me.park.openrush.reservation.application.CancelReservationHoldService
+import me.park.openrush.reservation.application.ReleaseReservationHoldResources
 import me.park.openrush.reservation.application.port.output.CancelHeldReservationPort
-import me.park.openrush.reservation.application.port.output.ReleasePerformanceSeatsPort
-import me.park.openrush.reservation.application.port.output.ReleasePurchaseQuotaPort
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
@@ -54,8 +53,7 @@ class ExpireReservationHoldTest {
     @Autowired private lateinit var transition: CoordinatedExpiration
     @Autowired private lateinit var jdbc: JdbcTemplate
     @Autowired private lateinit var adapter: ReservationPersistenceAdapter
-    @Autowired private lateinit var quotaRelease: ReleasePurchaseQuotaPort
-    @Autowired private lateinit var seatRelease: ReleasePerformanceSeatsPort
+    @Autowired private lateinit var holdResources: ReleaseReservationHoldResources
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     private var performanceId = 0L
     private lateinit var seats: List<Long>
@@ -221,6 +219,22 @@ class ExpireReservationHoldTest {
     }
 
     @Test
+    fun `만료 1나노초 전에는 선점을 취소할 수 있다`() {
+        val due = reserve(listOf(seats[0]))
+        makeDue(due)
+        val cancellation = CancelReservationHoldService(
+            adapter, adapter, holdResources, Clock.fixed(now.minusNanos(1), ZoneOffset.UTC),
+        )
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            cancellation.cancelHold(CancelReservationHoldCommand(1, due))
+        }
+
+        assertEquals("CANCELLED", status(due))
+        assertEquals(0, allocated())
+    }
+
+    @Test
     fun `만료 직전 접수한 취소와 만료가 경합해도 한 번만 반환한다`() {
         val due = reserve(seats.take(2))
         reserve(listOf(seats[2]))
@@ -234,7 +248,7 @@ class ExpireReservationHoldTest {
                 barrier.await(10, TimeUnit.SECONDS)
                 adapter.cancelHeld(id, user, time)
             },
-            quotaRelease, seatRelease, Clock.fixed(now.minusSeconds(1), ZoneOffset.UTC),
+            holdResources, Clock.fixed(now.minusSeconds(1), ZoneOffset.UTC),
         )
         val executor = Executors.newFixedThreadPool(2)
         try {

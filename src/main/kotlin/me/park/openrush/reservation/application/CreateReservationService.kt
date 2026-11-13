@@ -69,7 +69,7 @@ class CreateReservationService(
             performance = performance,
             userId = command.userId,
             seats = selectedSeats,
-            now = clock.instant(),
+            now = clock.reservationTimestamp(),
             holdDuration = holdDuration,
         )
 
