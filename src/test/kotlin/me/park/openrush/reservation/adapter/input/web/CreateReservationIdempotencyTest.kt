@@ -6,6 +6,7 @@ import me.park.openrush.reservation.application.ReservationQueue
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
 import me.park.openrush.reservation.application.port.input.CreateReservationResult
 import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
+import me.park.openrush.reservation.application.port.input.ExpireReservationHoldUseCase
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -34,6 +35,7 @@ class CreateReservationIdempotencyTest {
     @Autowired private lateinit var detailsController: ReservationDetailsController
     @Autowired private lateinit var queue: ReservationQueue
     @Autowired private lateinit var create: CreateReservationUseCase
+    @Autowired private lateinit var expiration: ExpireReservationHoldUseCase
     @Autowired private lateinit var jdbc: JdbcTemplate
     private lateinit var mvc: MockMvc
     private var performanceId = 0L
@@ -72,6 +74,30 @@ class CreateReservationIdempotencyTest {
         mvc.perform(get(location).param("userId", "1"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.status").value("CANCELLED"))
+    }
+
+    @Test
+    fun `선점 만료 처리 후 생성 응답의 Location에서 만료 상태를 조회한다`() {
+        val response = mvc.perform(request("expire", seats.take(2), permit()))
+            .andExpect(status().isCreated).andReturn().response
+        val location = checkNotNull(response.getHeader("Location"))
+        val reservationId = location.substringAfterLast('/').toLong()
+
+        mvc.perform(get(location).param("userId", "1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("HELD"))
+
+        assertEquals(1, jdbc.update(
+            """UPDATE reservations
+                SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute'
+                WHERE id = ?""",
+            reservationId,
+        ))
+        assertTrue(expiration.expireHold(reservationId))
+
+        mvc.perform(get(location).param("userId", "1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.status").value("EXPIRED"))
     }
 
     @Test
