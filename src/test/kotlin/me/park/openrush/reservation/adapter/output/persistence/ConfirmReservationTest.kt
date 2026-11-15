@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
 import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.awaitBlockedTransaction
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.port.input.ConfirmReservationCommand
@@ -21,6 +22,8 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
@@ -45,6 +48,7 @@ class ConfirmReservationTest {
     @Autowired private lateinit var transition: CoordinatedConfirmation
     @Autowired private lateinit var clock: AdjustableClock
     @Autowired private lateinit var jdbc: JdbcTemplate
+    @Autowired private lateinit var transactionManager: PlatformTransactionManager
     private lateinit var seats: List<Long>
     private var performanceId = 0L
 
@@ -150,6 +154,36 @@ class ConfirmReservationTest {
         } finally {
             proceed.countDown()
             transition.beforeUpdate = null
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `기한 전에 검증한 확정은 행 락 대기 중 만료 시각이 지나도 상태가 HELD이면 성공한다`() {
+        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
+        val validationTime = reservation.expiresAt.minusNanos(1_000)
+        clock.now = validationTime
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val pending = checkNotNull(TransactionTemplate(transactionManager).execute {
+                jdbc.queryForObject("SELECT id FROM reservations WHERE id = ? FOR NO KEY UPDATE", Long::class.java, reservation.reservationId)
+                val blockerPid = checkNotNull(jdbc.queryForObject("SELECT pg_backend_pid()", Int::class.java))
+                val confirmationRequest = executor.submit {
+                    confirmation.confirm(ConfirmReservationCommand(1, reservation.reservationId))
+                }
+                jdbc.awaitBlockedTransaction(blockerPid)
+                clock.now = reservation.expiresAt.plusSeconds(1)
+                assertEquals("HELD", status(reservation.reservationId))
+                confirmationRequest
+            })
+
+            pending.get(5, TimeUnit.SECONDS)
+            assertEquals("CONFIRMED", status(reservation.reservationId))
+            assertEquals(validationTime, confirmedAt(reservation.reservationId))
+            assertEquals(2, seatsOwnedBy(reservation.reservationId, "RESERVED"))
+            assertEquals(2, allocated())
+        } finally {
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }

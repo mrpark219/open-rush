@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.adapter.input.web
 
 import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.awaitBlockedTransaction
 import me.park.openrush.common.web.GlobalExceptionHandler
 import me.park.openrush.reservation.application.ReservationQueue
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
@@ -14,12 +15,15 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.mock.web.MockHttpServletResponse
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -37,6 +41,7 @@ class CreateReservationIdempotencyTest {
     @Autowired private lateinit var create: CreateReservationUseCase
     @Autowired private lateinit var expiration: ExpireReservationHoldUseCase
     @Autowired private lateinit var jdbc: JdbcTemplate
+    @Autowired private lateinit var transactionManager: PlatformTransactionManager
     private lateinit var mvc: MockMvc
     private var performanceId = 0L
     private lateinit var seats: List<Long>
@@ -133,6 +138,45 @@ class CreateReservationIdempotencyTest {
         assertEquals(0, count("reservation_creation_records"))
         mvc.perform(request("rollback", listOf(seats[0]), permit())).andExpect(status().isCreated)
         assertEquals(1, count("reservations"))
+    }
+
+    @Test
+    fun `입장권을 소비한 요청이 처리 중이면 중복 요청은 거절하고 커밋 후 최초 응답을 복구한다`() {
+        val selected = seats.take(2)
+        val ticket = permit()
+        val key = "queue-concurrent"
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val pending = checkNotNull(TransactionTemplate(transactionManager).execute {
+                jdbc.queryForObject("SELECT id FROM performance_seats WHERE id = ? FOR NO KEY UPDATE", Long::class.java, selected.first())
+                val blockerPid = checkNotNull(jdbc.queryForObject("SELECT pg_backend_pid()", Int::class.java))
+                val first = executor.submit<MockHttpServletResponse> {
+                    mvc.perform(request(key, selected, ticket))
+                        .andExpect(status().isCreated).andReturn().response
+                }
+                // 첫 요청은 입장권과 키를 확보한 뒤 좌석 갱신에서 대기한다.
+                jdbc.awaitBlockedTransaction(blockerPid)
+                executor.submit {
+                    mvc.perform(request(key, selected.reversed(), ticket))
+                        .andExpect(status().isTooManyRequests)
+                        .andExpect(jsonPath("$.code").value("QUEUE_ADMISSION_REQUIRED"))
+                }.get(5, TimeUnit.SECONDS)
+                first
+            })
+
+            val first = pending.get(5, TimeUnit.SECONDS)
+            val retry = mvc.perform(request(key, selected.reversed()))
+                .andExpect(status().isCreated).andReturn().response
+            assertEquals(first.getHeader("Location"), retry.getHeader("Location"))
+            assertEquals(first.contentAsString, retry.contentAsString)
+            assertEquals(1, count("reservations"))
+            assertEquals(1, count("reservation_creation_records"))
+            assertEquals(2, jdbc.queryForObject("SELECT sum(allocated_quantity) FROM concert_purchase_quotas", Int::class.java))
+            assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM performance_seats WHERE status = 'HELD'", Int::class.java))
+        } finally {
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
+        }
     }
 
     @Test
