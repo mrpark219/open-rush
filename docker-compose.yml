@@ -18,5 +18,13 @@ services:
       retries: 10
       start_period: 10s
 
+  demo-pg:
+    image: mrpark219/demo-pg:0.1.0
+    ports:
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - demo-pg-data:/var/lib/mysql
+
 volumes:
   postgres-data:
+  demo-pg-data:

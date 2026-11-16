@@ -1,0 +1,17 @@
+@baseUrl = http://127.0.0.1:8082
+@orderId = OPEN-RUSH-DEMO-001
+@paymentKey = PK-{{orderId}}
+
+### 결제 승인 (새 결제를 만들려면 orderId를 변경)
+POST {{baseUrl}}/v1/payments/confirm
+Content-Type: application/json
+Idempotency-Key: {{orderId}}
+
+{
+  "paymentKey": "{{paymentKey}}",
+  "orderId": "{{orderId}}",
+  "amount": 15000
+}
+
+### 주문 ID로 승인 결과 조회
+GET {{baseUrl}}/v1/payments/orders/{{orderId}}
