@@ -22,6 +22,9 @@ repositories {
 }
 
 dependencies {
+    implementation(platform("org.springframework.cloud:spring-cloud-dependencies:2025.1.4"))
+    implementation("org.springframework.cloud:spring-cloud-starter-openfeign")
+    implementation("io.github.openfeign:feign-hc5")
     implementation("io.github.openfeign.querydsl:querydsl-jpa:7.1")
     kapt("io.github.openfeign.querydsl:querydsl-apt:7.1:jpa")
     kapt("jakarta.persistence:jakarta.persistence-api")

@@ -66,6 +66,12 @@ docker compose up -d --wait
 금액과 통화가 일치하면 예매 확정과 결제 결과를 같은 트랜잭션으로 기록합니다. 결제사와 결제 ID가 같고 나머지 입력도 같으면 기존 결과를 반환합니다.
 금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 결제사 검증과 실제 환불 호출은 결제 어댑터 연동 범위입니다.
 
+### Demo PG HTTP 클라이언트
+
+`DemoPgClient`는 OpenFeign과 Apache HttpClient 5로 결제 승인과 주문 ID 조회를 호출합니다. 승인에는 `Idempotency-Key`를 전달합니다. PG 오류 응답은 Feign 예외의 HTTP 상태와 본문에서 확인할 수 있습니다.
+
+기본 주소는 `http://127.0.0.1:8082`입니다. 같은 Docker 네트워크에서는 `PAYMENT_DEMO_PG_BASE_URL=http://demo-pg:8082`를 사용합니다. `application.yaml`에서 풀 크기와 획득 대기 시간, 연결 및 읽기 타임아웃을 조정할 수 있습니다.
+
 ## 테스트
 
 예매 생성 도메인 테스트:

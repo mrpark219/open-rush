@@ -12,6 +12,20 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+  cloud:
+    openfeign:
+      httpclient:
+        max-connections: 8
+        max-connections-per-route: 8
+        hc5:
+          connection-request-timeout: 200
+          connection-request-timeout-unit: milliseconds
+      client:
+        config:
+          demo-pg:
+            connect-timeout: 300
+            read-timeout: 700
+            follow-redirects: false
 reservation:
   expiration:
     enabled: true
@@ -19,3 +33,7 @@ reservation:
     initial-delay: 10s
     batch-size: 100
     lock-timeout-ms: 1000
+
+payment:
+  demo-pg:
+    base-url: ${PAYMENT_DEMO_PG_BASE_URL:http://127.0.0.1:8082}
