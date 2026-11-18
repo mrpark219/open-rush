@@ -66,6 +66,8 @@ docker compose up -d --wait
 금액과 통화가 일치하면 예매 확정과 결제 결과를 같은 트랜잭션으로 기록합니다. 결제사와 결제 ID가 같고 나머지 입력도 같으면 기존 결과를 반환합니다.
 금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 결제사 검증과 실제 환불 호출은 결제 어댑터 연동 범위입니다.
 
+`reservation_payment_tx`는 예매별 결제 이력을 저장합니다. 승인 준비(`APPROVAL_PREPARED`), 승인 완료(`APPROVED`), 취소(`CANCELED`)는 각각 별도의 행입니다. 같은 결제 시도의 재요청에는 준비 단계에서 저장한 PG 주문 ID와 승인 멱등성 키를 재사용합니다. 과거 결제 성공 기록은 승인 완료 행으로 이전합니다.
+
 ### Demo PG HTTP 클라이언트
 
 `DemoPgClient`는 OpenFeign과 Apache HttpClient 5로 결제 승인과 주문 ID 조회를 호출합니다. 승인에는 `Idempotency-Key`를 전달합니다. PG 오류 응답은 Feign 예외의 HTTP 상태와 본문에서 확인할 수 있습니다.

@@ -9,7 +9,7 @@ end $$;
 
 begin;
 
-truncate reservation_creation_records, payment_records, reservation_items, performance_seats, reservations,
+truncate reservation_payment_tx, reservation_creation_records, reservation_items, performance_seats, reservations,
          concert_purchase_quotas, performances, concerts
 restart identity restrict;
 

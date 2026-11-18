@@ -1,4 +1,4 @@
-package me.park.openrush.payment.domain
+package me.park.openrush.reservation.domain.payment
 
 data class PaymentRecord(
     val payment: VerifiedPayment,
@@ -9,7 +9,3 @@ data class PaymentRecord(
         require((status == PaymentStatus.REFUND_REQUIRED) == (refundReason != null))
     }
 }
-
-enum class PaymentStatus { RESERVATION_CONFIRMED, REFUND_REQUIRED }
-
-enum class RefundReason { PAYMENT_MISMATCH, RESERVATION_UNAVAILABLE }

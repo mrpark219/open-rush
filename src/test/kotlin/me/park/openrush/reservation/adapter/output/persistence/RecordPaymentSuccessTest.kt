@@ -1,11 +1,11 @@
-package me.park.openrush.payment.adapter.output.persistence
+package me.park.openrush.reservation.adapter.output.persistence
 
 import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.payment.application.port.input.RecordPaymentSuccessUseCase
-import me.park.openrush.payment.domain.PaymentRecord
-import me.park.openrush.payment.domain.PaymentStatus
-import me.park.openrush.payment.domain.RefundReason
-import me.park.openrush.payment.domain.VerifiedPayment
+import me.park.openrush.reservation.application.port.input.RecordPaymentSuccessUseCase
+import me.park.openrush.reservation.domain.payment.PaymentRecord
+import me.park.openrush.reservation.domain.payment.PaymentStatus
+import me.park.openrush.reservation.domain.payment.RefundReason
+import me.park.openrush.reservation.domain.payment.VerifiedPayment
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
@@ -60,7 +60,7 @@ class RecordPaymentSuccessTest {
         val expected = PaymentRecord(payment, PaymentStatus.RESERVATION_CONFIRMED)
         assertEquals(expected, recordPayment.record(payment))
         assertEquals(expected, recordPayment.record(payment))
-        assertEquals(1, count("SELECT count(*) FROM payment_records WHERE status = 'RESERVATION_CONFIRMED'"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx WHERE status = 'RESERVATION_CONFIRMED'"))
         assertEquals("CONFIRMED", reservationStatus())
         assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'RESERVED' AND reservation_id = ?", payment.reservationId))
         assertEquals(2, count("SELECT allocated_quantity FROM concert_purchase_quotas"))
@@ -71,14 +71,14 @@ class RecordPaymentSuccessTest {
         val saved = recordPayment.record(payment)
         assertFailsWith<IllegalArgumentException> { recordPayment.record(payment.copy(amount = payment.amount + 1)) }
         assertEquals(saved, recordPayment.record(payment))
-        assertEquals(1, count("SELECT count(*) FROM payment_records"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx"))
     }
 
     @Test
     fun `동일 결제의 동시 통지는 같은 결과를 반환한다`() {
         val expected = PaymentRecord(payment, PaymentStatus.RESERVATION_CONFIRMED)
         assertEquals(listOf(expected, expected), concurrently(payment, payment))
-        assertEquals(1, count("SELECT count(*) FROM payment_records"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx"))
     }
 
     @Test
@@ -86,7 +86,7 @@ class RecordPaymentSuccessTest {
         val results = concurrently(payment, payment.copy(paymentId = "payment-2"))
         assertEquals(1, results.count { it.status == PaymentStatus.RESERVATION_CONFIRMED })
         assertEquals(RefundReason.RESERVATION_UNAVAILABLE, results.single { it.status == PaymentStatus.REFUND_REQUIRED }.refundReason)
-        assertEquals(1, count("SELECT count(*) FROM payment_records WHERE status = 'REFUND_REQUIRED'"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx WHERE status = 'REFUND_REQUIRED'"))
         assertEquals("CONFIRMED", reservationStatus())
         assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'RESERVED'"))
         assertEquals(2, count("SELECT allocated_quantity FROM concert_purchase_quotas"))
@@ -99,7 +99,7 @@ class RecordPaymentSuccessTest {
         listOf(wrongAmount, wrongCurrency).forEach {
             assertEquals(PaymentRecord(it, PaymentStatus.REFUND_REQUIRED, RefundReason.PAYMENT_MISMATCH), recordPayment.record(it))
         }
-        assertEquals(2, count("SELECT count(*) FROM payment_records WHERE status = 'REFUND_REQUIRED'"))
+        assertEquals(2, count("SELECT count(*) FROM reservation_payment_tx WHERE status = 'REFUND_REQUIRED'"))
         assertEquals("HELD", reservationStatus())
         assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
     }
@@ -113,7 +113,7 @@ class RecordPaymentSuccessTest {
         assertEquals("HELD", reservationStatus())
         assertTrue(expire.expireHold(payment.reservationId))
         assertEquals(expected, recordPayment.record(payment))
-        assertEquals(1, count("SELECT count(*) FROM payment_records WHERE status = 'REFUND_REQUIRED'"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx WHERE status = 'REFUND_REQUIRED'"))
         assertEquals("EXPIRED", reservationStatus())
         assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'AVAILABLE'"))
         assertEquals(0, count("SELECT allocated_quantity FROM concert_purchase_quotas"))
@@ -124,7 +124,7 @@ class RecordPaymentSuccessTest {
         cancel.cancelHold(CancelReservationHoldCommand(1, payment.reservationId))
         assertEquals(PaymentRecord(payment, PaymentStatus.REFUND_REQUIRED, RefundReason.RESERVATION_UNAVAILABLE), recordPayment.record(payment))
         assertEquals("CANCELLED", reservationStatus())
-        assertEquals(1, count("SELECT count(*) FROM payment_records WHERE status = 'REFUND_REQUIRED'"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx WHERE status = 'REFUND_REQUIRED'"))
         assertEquals(0, count("SELECT allocated_quantity FROM concert_purchase_quotas"))
     }
 
@@ -132,13 +132,13 @@ class RecordPaymentSuccessTest {
     fun `예상하지 못한 좌석 전환 실패는 결제 기록까지 롤백해 같은 통지를 다시 처리할 수 있다`() {
         jdbc.update("UPDATE performance_seats SET status = 'AVAILABLE', reservation_id = NULL WHERE id = ?", seats.last())
         assertFailsWith<IllegalStateException> { recordPayment.record(payment) }
-        assertEquals(0, count("SELECT count(*) FROM payment_records"))
+        assertEquals(0, count("SELECT count(*) FROM reservation_payment_tx"))
         assertEquals("HELD", reservationStatus())
         assertEquals(0, count("SELECT count(*) FROM performance_seats WHERE status = 'RESERVED'"))
 
         jdbc.update("UPDATE performance_seats SET status = 'HELD', reservation_id = ? WHERE id = ?", payment.reservationId, seats.last())
         assertEquals(PaymentStatus.RESERVATION_CONFIRMED, recordPayment.record(payment).status)
-        assertEquals(1, count("SELECT count(*) FROM payment_records"))
+        assertEquals(1, count("SELECT count(*) FROM reservation_payment_tx"))
     }
 
     private fun concurrently(first: VerifiedPayment, second: VerifiedPayment): List<PaymentRecord> {
