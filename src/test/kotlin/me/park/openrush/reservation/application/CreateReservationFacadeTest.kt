@@ -1,17 +1,14 @@
 package me.park.openrush.reservation.application
 
 import jakarta.persistence.PessimisticLockException
-import me.park.openrush.common.exception.ConcurrencyException
-import me.park.openrush.reservation.application.exception.PurchaseQuotaCreationConflict
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationResult
+import me.park.openrush.quota.application.exception.PurchaseQuotaCreationConflictException
+import me.park.openrush.reservation.application.exception.ConcurrencyException
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationResult
 import me.park.openrush.reservation.domain.ReservationStatus
-import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
+import me.park.openrush.reservation.domain.exception.ReservationRuleViolationException
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.mock
-import org.mockito.Mockito.times
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.`when`
+import org.mockito.Mockito.*
 import org.springframework.dao.DataIntegrityViolationException
 import java.time.Instant
 import kotlin.test.assertFailsWith
@@ -20,7 +17,7 @@ import kotlin.test.assertSame
 class CreateReservationFacadeTest {
     @Test
     fun `구매 한도 생성 충돌만 한 번 재시도한다`() {
-        val conflict = PurchaseQuotaCreationConflict(RuntimeException())
+        val conflict = PurchaseQuotaCreationConflictException(RuntimeException())
         `when`(service.create(command)).thenThrow(conflict).thenReturn(result)
 
         assertSame(result, facade.create(command))
@@ -29,7 +26,7 @@ class CreateReservationFacadeTest {
 
     @Test
     fun `두 번째 구매 한도 생성 충돌은 재시도하지 않고 동시성 예외로 반환한다`() {
-        val conflict = PurchaseQuotaCreationConflict(RuntimeException())
+        val conflict = PurchaseQuotaCreationConflictException(RuntimeException())
         `when`(service.create(command)).thenThrow(conflict)
 
         val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
@@ -49,10 +46,10 @@ class CreateReservationFacadeTest {
 
     @Test
     fun `정책 거절은 재시도하지 않는다`() {
-        val rejection = ReservationRuleViolation("구매 한도 초과")
+        val rejection = ReservationRuleViolationException("구매 한도 초과")
         `when`(service.create(command)).thenThrow(rejection)
 
-        assertSame(rejection, assertFailsWith<ReservationRuleViolation> { facade.create(command) })
+        assertSame(rejection, assertFailsWith<ReservationRuleViolationException> { facade.create(command) })
         verify(service, times(1)).create(command)
     }
 
@@ -67,7 +64,7 @@ class CreateReservationFacadeTest {
         verify(service, times(1)).create(command)
     }
 
-    private val service = mock(CreateReservationService::class.java)
+    private val service = mock(ReservationService::class.java)
     private val facade = CreateReservationFacade(service)
     private val command = CreateReservationCommand(1, 1, listOf(1))
     private val result = CreateReservationResult(

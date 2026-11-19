@@ -4,9 +4,9 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import jakarta.servlet.ServletException
 import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.common.web.GlobalExceptionHandler
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationUseCase
+import me.park.openrush.support.web.GlobalExceptionHandler
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -25,11 +25,11 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import java.net.InetSocketAddress
-import java.util.UUID
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
@@ -39,15 +39,24 @@ import kotlin.test.assertTrue
 @Import(TestcontainersConfiguration::class)
 @SpringBootTest(properties = ["reservation.expiration.enabled=false"])
 class ApproveReservationPaymentTest {
-    @Autowired private lateinit var controller: ReservationPaymentController
-    @Autowired private lateinit var advice: GlobalExceptionHandler
-    @Autowired private lateinit var reservations: CreateReservationUseCase
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var transactionManager: PlatformTransactionManager
+    @Autowired
+    private lateinit var controller: ReservationPaymentController
+    @Autowired
+    private lateinit var advice: GlobalExceptionHandler
+    @Autowired
+    private lateinit var reservations: CreateReservationUseCase
+    @Autowired
+    private lateinit var jdbc: JdbcTemplate
+    @Autowired
+    private lateinit var transactionManager: PlatformTransactionManager
     private lateinit var mvc: MockMvc
     private var reservationId = 0L
-    private lateinit var attemptId: UUID
-    private val orderId: String get() = jdbc.queryForObject("SELECT pg_order_id FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'", String::class.java)!!
+    private lateinit var attemptNumber: UUID
+    private val orderId: String
+        get() = jdbc.queryForObject(
+            "SELECT pg_order_number FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'",
+            String::class.java
+        )!!
 
     @BeforeEach
     fun setUp() {
@@ -55,14 +64,20 @@ class ApproveReservationPaymentTest {
         respond = { it.reply(500, "{}") }
         mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(advice).build()
         jdbc.execute("TRUNCATE concerts CASCADE")
-        val concertId = id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        val performanceId = id("""
+        val concertId =
+            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
+        val performanceId = id(
+            """
             INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
             VALUES (?, '공연장', now() + interval '2 days', now() - interval '1 day', now() + interval '1 day') RETURNING id
-        """.trimIndent(), concertId)
-        val seatId = id("INSERT INTO performance_seats(performance_id, seat_number, price, status) VALUES (?, 'A-1', 15000, 'AVAILABLE') RETURNING id", performanceId)
+        """.trimIndent(), concertId
+        )
+        val seatId = id(
+            "INSERT INTO performance_seats(performance_id, seat_number, price, status) VALUES (?, 'A-1', 15000, 'AVAILABLE') RETURNING id",
+            performanceId
+        )
         reservationId = reservations.create(CreateReservationCommand(1L, performanceId, listOf(seatId))).reservationId
-        attemptId = UUID.randomUUID()
+        attemptNumber = UUID.randomUUID()
     }
 
     @Test
@@ -70,7 +85,11 @@ class ApproveReservationPaymentTest {
         var committedAndUnlocked = false
         normalResponses(beforeApproval = {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                jdbc.queryForObject("SELECT id FROM reservations WHERE id = ? FOR UPDATE NOWAIT", Long::class.java, reservationId)
+                jdbc.queryForObject(
+                    "SELECT id FROM reservations WHERE id = ? FOR UPDATE NOWAIT",
+                    Long::class.java,
+                    reservationId
+                )
                 assertEquals(1, count("APPROVAL_PREPARED"))
                 committedAndUnlocked = true
             }
@@ -82,7 +101,13 @@ class ApproveReservationPaymentTest {
         assertEquals("CONFIRMED", reservationStatus())
         assertEquals(1, count("APPROVED"))
         assertEquals(listOf("GET", "POST"), requests.map { it.first })
-        assertEquals("PK-TEST", jdbc.queryForObject("SELECT requested_payment_key FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'", String::class.java))
+        assertEquals(
+            "PK-TEST",
+            jdbc.queryForObject(
+                "SELECT requested_payment_key FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'",
+                String::class.java
+            )
+        )
     }
 
     @Test
@@ -179,10 +204,12 @@ class ApproveReservationPaymentTest {
     fun `PG 승인 후 DB 저장이 롤백되어도 재요청의 주문 조회로 복구한다`() {
         val approved = AtomicBoolean(false)
         respond = {
-            if (it.requestMethod == "POST") { approved.set(true); it.reply(200, done()) }
-            else if (approved.get()) it.reply(200, done()) else it.reply(404, "{}")
+            if (it.requestMethod == "POST") {
+                approved.set(true); it.reply(200, done())
+            } else if (approved.get()) it.reply(200, done()) else it.reply(404, "{}")
         }
-        jdbc.execute("""
+        jdbc.execute(
+            """
             CREATE FUNCTION reject_test_approval() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
                 IF NEW.type = 'APPROVED' THEN
@@ -190,7 +217,8 @@ class ApproveReservationPaymentTest {
                 END IF;
                 RETURN NEW;
             END $$
-        """.trimIndent())
+        """.trimIndent()
+        )
         jdbc.execute("CREATE TRIGGER reject_test_approval BEFORE INSERT ON reservation_payment_tx FOR EACH ROW EXECUTE FUNCTION reject_test_approval()")
         try {
             assertFailsWith<ServletException> { confirm() }
@@ -208,7 +236,12 @@ class ApproveReservationPaymentTest {
 
     @Test
     fun `PG 카드 거절은 422이고 예매 확정과 승인 이력이 없다`() {
-        respond = { if (it.requestMethod == "GET") it.reply(404, "{}") else it.reply(403, """{"code":"REJECT_CARD_PAYMENT"}""") }
+        respond = {
+            if (it.requestMethod == "GET") it.reply(404, "{}") else it.reply(
+                403,
+                """{"code":"REJECT_CARD_PAYMENT"}"""
+            )
+        }
         confirm().andExpect(status().isUnprocessableContent).andExpect(jsonPath("$.code").value("PAYMENT_REJECTED"))
         assertEquals("HELD", reservationStatus())
         assertEquals(0, count("APPROVED"))
@@ -216,11 +249,15 @@ class ApproveReservationPaymentTest {
 
     @Test
     fun `PG 응답 주문이나 결제 키 또는 상태가 다르면 확정하지 않는다`() {
-        listOf<() -> String>({ done(order = "OTHER-ORDER") }, { done(key = "OTHER-KEY") }, { done(state = "CANCELED") }).forEach { response ->
+        listOf<() -> String>(
+            { done(order = "OTHER-ORDER") },
+            { done(key = "OTHER-KEY") },
+            { done(state = "CANCELED") }).forEach { response ->
             val posted = AtomicBoolean(false)
             respond = {
-                if (it.requestMethod == "POST") { posted.set(true); it.reply(200, response()) }
-                else if (!posted.get()) it.reply(404, "{}") else it.reply(200, response())
+                if (it.requestMethod == "POST") {
+                    posted.set(true); it.reply(200, response())
+                } else if (!posted.get()) it.reply(404, "{}") else it.reply(200, response())
             }
             confirm().andExpect(status().isAccepted)
             assertEquals(0, count("APPROVED"))
@@ -279,12 +316,17 @@ class ApproveReservationPaymentTest {
 
     @Test
     fun `잘못된 입력은 PG 호출 전에 거절한다`() {
-        listOf("""{"userId":0,"attemptId":"$attemptId","paymentKey":"PK"}""",
-            """{"userId":1,"attemptId":"invalid","paymentKey":"PK"}""",
-            """{"userId":1,"attemptId":"$attemptId","paymentKey":" "}""",
-            """{"userId":1,"attemptId":"$attemptId","paymentKey":"${"X".repeat(201)}"}""",
-            "{}").forEach { body ->
-            mvc.perform(post("/reservations/$reservationId/payments/confirm").contentType(MediaType.APPLICATION_JSON).content(body))
+        listOf(
+            """{"userId":0,"attemptNumber":"$attemptNumber","paymentKey":"PK"}""",
+            """{"userId":1,"attemptNumber":"invalid","paymentKey":"PK"}""",
+            """{"userId":1,"attemptNumber":"$attemptNumber","paymentKey":" "}""",
+            """{"userId":1,"attemptNumber":"$attemptNumber","paymentKey":"${"X".repeat(201)}"}""",
+            "{}"
+        ).forEach { body ->
+            mvc.perform(
+                post("/reservations/$reservationId/payments/confirm").contentType(MediaType.APPLICATION_JSON)
+                    .content(body)
+            )
                 .andExpect(status().isBadRequest)
         }
         assertTrue(requests.isEmpty())
@@ -302,38 +344,64 @@ class ApproveReservationPaymentTest {
 
     private fun confirm(key: String = "PK-TEST", userId: Long = 1) = mvc.perform(
         post("/reservations/$reservationId/payments/confirm").contentType(MediaType.APPLICATION_JSON)
-            .content("""{"userId":$userId,"attemptId":"$attemptId","paymentKey":"$key"}"""),
+            .content("""{"userId":$userId,"attemptNumber":"$attemptNumber","paymentKey":"$key"}"""),
     )
 
-    private fun done(order: String = orderId, key: String = "PK-TEST", state: String = "DONE", amount: Long = 15000, currency: String = "KRW") =
+    private fun done(
+        order: String = orderId,
+        key: String = "PK-TEST",
+        state: String = "DONE",
+        amount: Long = 15000,
+        currency: String = "KRW"
+    ) =
         """{"paymentKey":"$key","orderId":"$order","currency":"$currency","totalAmount":$amount,"balanceAmount":$amount,"status":"$state"}"""
 
     private fun expire() {
-        jdbc.update("UPDATE reservations SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute' WHERE id = ?", reservationId)
+        jdbc.update(
+            "UPDATE reservations SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute' WHERE id = ?",
+            reservationId
+        )
     }
-    private fun count(type: String) = jdbc.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)
-    private fun reservationStatus() = jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
+
+    private fun count(type: String) =
+        jdbc.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)
+
+    private fun reservationStatus() =
+        jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
+
     private fun id(sql: String, vararg args: Any): Long = jdbc.queryForObject(sql, Long::class.java, *args)!!
 
     companion object {
         private val requests = CopyOnWriteArrayList<Pair<String, String>>()
-        @Volatile private var respond: (HttpExchange) -> Unit = { it.reply(500, "{}") }
+        @Volatile
+        private var respond: (HttpExchange) -> Unit = { it.reply(500, "{}") }
         private val pgExecutor = Executors.newCachedThreadPool()
         private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
             createContext("/v1/payments") { exchange ->
                 val body = exchange.requestBody.bufferedReader().use { it.readText() }
-                requests.add(exchange.requestMethod to (exchange.requestURI.path + "|" + exchange.requestHeaders.getFirst("Idempotency-Key") + "|" + body))
+                requests.add(
+                    exchange.requestMethod to (exchange.requestURI.path + "|" + exchange.requestHeaders.getFirst(
+                        "Idempotency-Key"
+                    ) + "|" + body)
+                )
                 respond(exchange)
             }
             this.executor = pgExecutor
             start()
         }
-        @JvmStatic @DynamicPropertySource
+
+        @JvmStatic
+        @DynamicPropertySource
         fun properties(registry: DynamicPropertyRegistry) {
             registry.add("payment.demo-pg.base-url") { "http://127.0.0.1:${server.address.port}" }
         }
-        @JvmStatic @AfterAll
-        fun stop() { server.stop(0); pgExecutor.shutdownNow() }
+
+        @JvmStatic
+        @AfterAll
+        fun stop() {
+            server.stop(0); pgExecutor.shutdownNow()
+        }
+
         private fun HttpExchange.reply(status: Int, body: String) {
             val bytes = body.toByteArray()
             responseHeaders.set("Content-Type", "application/json")

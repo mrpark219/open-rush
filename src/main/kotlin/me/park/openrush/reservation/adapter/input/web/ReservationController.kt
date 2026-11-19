@@ -1,26 +1,21 @@
 package me.park.openrush.reservation.adapter.input.web
 
 import jakarta.validation.Valid
-import java.net.URI
-import me.park.openrush.reservation.application.ReservationQueue
-import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
-import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
+import me.park.openrush.queue.application.provided.ReservationAdmissionUseCase
+import me.park.openrush.reservation.application.provided.CancelReservationHoldCommand
+import me.park.openrush.reservation.application.provided.CancelReservationHoldUseCase
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationUseCase
 import org.springframework.http.ResponseEntity
-import org.springframework.web.bind.annotation.PathVariable
-import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.RequestBody
-import org.springframework.web.bind.annotation.RequestHeader
-import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.*
+import java.net.URI
 
 @RestController
 @RequestMapping("/reservations")
 class ReservationController(
     private val reservations: CreateReservationUseCase,
     private val holdCancellations: CancelReservationHoldUseCase,
-    private val queue: ReservationQueue? = null,
+    private val queue: ReservationAdmissionUseCase? = null,
 ) {
     @PostMapping("/{reservationId}/cancel-hold")
     fun cancelHold(

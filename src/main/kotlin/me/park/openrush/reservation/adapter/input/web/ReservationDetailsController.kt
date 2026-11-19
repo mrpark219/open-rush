@@ -1,7 +1,7 @@
 package me.park.openrush.reservation.adapter.input.web
 
-import me.park.openrush.reservation.application.port.input.GetReservationUseCase
-import me.park.openrush.reservation.application.port.input.ReservationDetails
+import me.park.openrush.reservation.application.provided.GetReservationUseCase
+import me.park.openrush.reservation.application.provided.ReservationDetails
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable

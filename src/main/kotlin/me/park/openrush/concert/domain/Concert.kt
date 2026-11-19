@@ -1,7 +1,9 @@
 package me.park.openrush.concert.domain
 
-import jakarta.persistence.*
-import me.park.openrush.common.domain.BaseEntity
+import jakarta.persistence.Column
+import jakarta.persistence.Entity
+import jakarta.persistence.Table
+import me.park.openrush.support.persistence.BaseEntity
 
 @Entity
 @Table(name = "concerts")

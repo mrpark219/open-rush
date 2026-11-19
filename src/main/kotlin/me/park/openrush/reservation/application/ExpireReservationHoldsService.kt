@@ -1,9 +1,9 @@
 package me.park.openrush.reservation.application
 
-import me.park.openrush.reservation.application.port.input.ExpireReservationHoldUseCase
-import me.park.openrush.reservation.application.port.input.ExpireReservationHoldsResult
-import me.park.openrush.reservation.application.port.input.ExpireReservationHoldsUseCase
-import me.park.openrush.reservation.application.port.output.FindExpiredReservationHoldsPort
+import me.park.openrush.reservation.application.provided.ExpireReservationHoldUseCase
+import me.park.openrush.reservation.application.provided.ExpireReservationHoldsResult
+import me.park.openrush.reservation.application.provided.ExpireReservationHoldsUseCase
+import me.park.openrush.reservation.application.required.ReservationRepositoryPort
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
@@ -11,7 +11,7 @@ import java.time.Clock
 
 @Service
 class ExpireReservationHoldsService(
-    private val findExpiredReservationHoldsPort: FindExpiredReservationHoldsPort,
+    private val reservations: ReservationRepositoryPort,
     private val expireReservationHoldUseCase: ExpireReservationHoldUseCase,
     private val clock: Clock,
     @param:Value("\${reservation.expiration.batch-size:100}") private val batchSize: Int,
@@ -29,7 +29,7 @@ class ExpireReservationHoldsService(
         var skipped = 0
         var failed = 0
         while (true) {
-            val ids = findExpiredReservationHoldsPort.findExpiredReservationIds(cutoff, afterId, batchSize)
+            val ids = reservations.findExpiredReservationIds(cutoff, afterId, batchSize)
             if (ids.isEmpty()) break
             ids.forEach { id ->
                 try {

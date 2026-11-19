@@ -43,17 +43,17 @@ if [[ "$scenario" == queue || "$scenario" == queue-baseline ]]; then
   app_args+=("--spring.datasource.hikari.maximum-pool-size=$db_pool_size"
     "--spring.datasource.hikari.minimum-idle=$db_pool_size")
   if [[ "$scenario" == queue ]]; then
-    app_args+=(--reservation.queue.enabled=true "--reservation.queue.admissions-per-second=$admission_rate"
-      "--reservation.queue.max-in-flight=$max_in_flight")
+    app_args+=(--queue.enabled=true "--queue.admissions-per-second=$admission_rate"
+      "--queue.max-in-flight=$max_in_flight")
   fi
 fi
 if [[ "$scenario" == rehold ]]; then
-  if (( requests < 3 || warmup_requests < 3 )); then
-    echo 'rehold requires at least 3 iterations in both REQUESTS and WARMUP_REQUESTS.' >&2
+  if (( requests < 2 || warmup_requests < 2 )); then
+    echo 'rehold requires at least 2 iterations in both REQUESTS and WARMUP_REQUESTS.' >&2
     exit 1
   fi
   warmup_scenario=rehold
-  app_args+=(--reservation.benchmark.rehold-enabled=true --reservation.hold-duration-ms=5000
+  app_args+=(--reservation.hold-duration-ms=5000
     --reservation.expiration.enabled=true --reservation.expiration.fixed-delay=250ms
     --reservation.expiration.initial-delay=0s)
 fi

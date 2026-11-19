@@ -35,8 +35,10 @@ import kotlin.test.assertTrue
     ],
 )
 class DemoPgClientTest {
-    @Autowired private lateinit var client: DemoPgClient
-    @Autowired private lateinit var json: ObjectMapper
+    @Autowired
+    private lateinit var client: DemoPgClient
+    @Autowired
+    private lateinit var json: ObjectMapper
 
     @BeforeEach
     fun setUp() {
@@ -75,7 +77,8 @@ class DemoPgClientTest {
         }
 
         val missing = assertFailsWith<FeignException.NotFound> { client.findByOrder("ORDER-MISSING") }
-        val rejected = assertFailsWith<FeignException.Forbidden> { client.confirm("confirm-order-1001", approvalRequest) }
+        val rejected =
+            assertFailsWith<FeignException.Forbidden> { client.confirm("confirm-order-1001", approvalRequest) }
         assertEquals("NOT_FOUND_PAYMENT", json.readTree(missing.contentUTF8())["code"].asString())
         assertEquals("REJECT_CARD_PAYMENT", json.readTree(rejected.contentUTF8())["code"].asString())
         assertEquals(2, requests.size)
@@ -140,7 +143,8 @@ class DemoPgClientTest {
         private val approvalRequest = DemoPgConfirmRequest("PK-1001", "ORDER-1001", 15000)
         private val requests = CopyOnWriteArrayList<RecordedRequest>()
         private val serverExecutor = Executors.newCachedThreadPool()
-        @Volatile private var respond: (HttpExchange) -> Unit = {}
+        @Volatile
+        private var respond: (HttpExchange) -> Unit = {}
         private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
             executor = serverExecutor
             createContext("/") { exchange ->

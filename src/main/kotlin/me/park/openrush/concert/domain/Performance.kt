@@ -1,7 +1,7 @@
 package me.park.openrush.concert.domain
 
 import jakarta.persistence.*
-import me.park.openrush.common.domain.BaseEntity
+import me.park.openrush.support.persistence.BaseEntity
 import java.time.Instant
 
 @Entity

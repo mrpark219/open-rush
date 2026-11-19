@@ -2,19 +2,19 @@ package me.park.openrush.reservation.adapter.output.persistence
 
 import jakarta.persistence.EntityManager
 import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.reservation.adapter.output.persistence.repository.PurchaseQuotaRepository
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationResult
-import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
-import me.park.openrush.reservation.application.port.output.AllocatePurchaseQuotaPort
-import me.park.openrush.reservation.application.port.output.AllocateQuotaCommand
-import me.park.openrush.reservation.application.port.output.HoldPerformanceSeatsPort
-import me.park.openrush.reservation.application.port.output.HoldSeatsCommand
-import me.park.openrush.reservation.application.port.output.LoadPerformanceSeatsPort
-import me.park.openrush.reservation.domain.ConcertPurchaseQuota
-import me.park.openrush.reservation.domain.seat.PerformanceSeat
-import me.park.openrush.reservation.domain.seat.SeatStatus
-import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
+import me.park.openrush.quota.adapter.output.persistence.repository.PurchaseQuotaRepository
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationResult
+import me.park.openrush.reservation.application.provided.CreateReservationUseCase
+import me.park.openrush.quota.application.provided.AllocatePurchaseQuotaUseCase
+import me.park.openrush.quota.application.provided.AllocateQuotaCommand
+import me.park.openrush.inventory.application.provided.HoldSeatsUseCase
+import me.park.openrush.inventory.application.provided.HoldSeatsCommand
+import me.park.openrush.inventory.application.provided.GetSeatsUseCase
+import me.park.openrush.quota.domain.ConcertPurchaseQuota
+import me.park.openrush.inventory.domain.PerformanceSeat
+import me.park.openrush.inventory.domain.SeatStatus
+import me.park.openrush.reservation.domain.exception.ReservationRuleViolationException
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -44,8 +44,8 @@ class ConditionalUpdateReservationTest {
     @Autowired private lateinit var loader: CoordinatedSeatLoader
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
-    @Autowired private lateinit var quotaPort: AllocatePurchaseQuotaPort
-    @Autowired private lateinit var seatPort: HoldPerformanceSeatsPort
+    @Autowired private lateinit var quotaPort: AllocatePurchaseQuotaUseCase
+    @Autowired private lateinit var seatPort: HoldSeatsUseCase
     @Autowired private lateinit var purchaseQuotaRepository: PurchaseQuotaRepository
 
     private var concertId = 0L
@@ -116,7 +116,7 @@ class ConditionalUpdateReservationTest {
             useCase.create(command(2, seatIds[1]))
         }
 
-        assertFailsWith<ReservationRuleViolation> {
+        assertFailsWith<ReservationRuleViolationException> {
             useCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
         }
 
@@ -131,7 +131,7 @@ class ConditionalUpdateReservationTest {
     @Test
     fun `한도 초과 시 기존 예약을 유지하고 추가 예약과 좌석 변경은 남지 않는다`() {
         useCase.create(CreateReservationCommand(1, performanceId, seatIds.take(3)))
-        assertFailsWith<ReservationRuleViolation> {
+        assertFailsWith<ReservationRuleViolationException> {
             useCase.create(CreateReservationCommand(1, performanceId, seatIds.drop(3).take(2)))
         }
 
@@ -186,7 +186,7 @@ class ConditionalUpdateReservationTest {
         val otherSeat = id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
             VALUES (?, 'B1', 50000, 'AVAILABLE') RETURNING id""", otherPerformance)
 
-        assertFailsWith<ReservationRuleViolation> {
+        assertFailsWith<me.park.openrush.inventory.domain.exception.InventoryRuleViolationException> {
             TransactionTemplate(transactionManager).executeWithoutResult {
                 seatPort.hold(HoldSeatsCommand(reservation.reservationId, performanceId, listOf(seatIds[1], otherSeat)))
             }
@@ -224,7 +224,7 @@ class ConditionalUpdateReservationTest {
 
     private fun assertPolicyFailures(results: List<Result<CreateReservationResult>>) {
         results.filter { it.isFailure }.forEach {
-            assertTrue(it.exceptionOrNull() is ReservationRuleViolation, "예상하지 않은 실패: ${it.exceptionOrNull()}")
+            assertTrue(it.exceptionOrNull() is ReservationRuleViolationException, "예상하지 않은 실패: ${it.exceptionOrNull()}")
         }
     }
 
@@ -241,12 +241,12 @@ class ConditionalUpdateReservationTest {
     class Configuration {
         @Bean
         @Primary
-        fun coordinatedSeatLoader(adapter: ReservationPersistenceAdapter) = CoordinatedSeatLoader(adapter)
+        fun coordinatedSeatLoader(adapter: me.park.openrush.inventory.application.InventoryService) = CoordinatedSeatLoader(adapter)
     }
 
-    class CoordinatedSeatLoader(private val delegate: ReservationPersistenceAdapter) : LoadPerformanceSeatsPort {
+    class CoordinatedSeatLoader(private val delegate: me.park.openrush.inventory.application.InventoryService) : GetSeatsUseCase {
         val afterRead = AtomicReference<(() -> Unit)?>(null)
-        override fun findSeats(performanceId: Long, seatIds: List<Long>): List<PerformanceSeat> {
+        override fun findSeats(performanceId: Long, seatIds: List<Long>): List<me.park.openrush.inventory.application.provided.SeatDetails> {
             val seats = delegate.findSeats(performanceId, seatIds)
             afterRead.get()?.invoke()
             return seats

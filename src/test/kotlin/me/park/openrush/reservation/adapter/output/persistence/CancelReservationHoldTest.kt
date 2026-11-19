@@ -1,13 +1,13 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
 import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.reservation.application.port.input.CancelReservationHoldCommand
-import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
-import me.park.openrush.reservation.application.port.output.LoadReservationPort
+import me.park.openrush.reservation.application.provided.CancelReservationHoldCommand
+import me.park.openrush.reservation.application.provided.CancelReservationHoldUseCase
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationUseCase
+import me.park.openrush.reservation.application.required.ReservationRepositoryPort
 import me.park.openrush.reservation.domain.Reservation
-import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
+import me.park.openrush.reservation.domain.exception.ReservationRuleViolationException
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -34,11 +34,16 @@ import kotlin.test.assertTrue
 @Import(TestcontainersConfiguration::class, CancelReservationHoldTest.Configuration::class)
 @SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16", "reservation.expiration.enabled=false"])
 class CancelReservationHoldTest {
-    @Autowired private lateinit var create: CreateReservationUseCase
-    @Autowired private lateinit var holdCancellation: CancelReservationHoldUseCase
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var loader: CoordinatedReservationLoader
-    @Autowired private lateinit var transactionManager: PlatformTransactionManager
+    @Autowired
+    private lateinit var create: CreateReservationUseCase
+    @Autowired
+    private lateinit var holdCancellation: CancelReservationHoldUseCase
+    @Autowired
+    private lateinit var jdbc: JdbcTemplate
+    @Autowired
+    private lateinit var loader: CoordinatedReservationLoader
+    @Autowired
+    private lateinit var transactionManager: PlatformTransactionManager
     private var performanceId = 0L
     private lateinit var seats: List<Long>
     private val now = Instant.parse("2026-11-04T00:00:00Z")
@@ -47,12 +52,18 @@ class CancelReservationHoldTest {
     fun setUp() {
         loader.afterRead.set(null)
         jdbc.execute("TRUNCATE concerts CASCADE")
-        val concertId = id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        performanceId = id("""INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', '2026-11-06T00:00:00Z', '2026-11-03T00:00:00Z', '2026-11-05T00:00:00Z') RETURNING id""", concertId)
+        val concertId =
+            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
+        performanceId = id(
+            """INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
+            VALUES (?, '공연장', '2026-11-06T00:00:00Z', '2026-11-03T00:00:00Z', '2026-11-05T00:00:00Z') RETURNING id""",
+            concertId
+        )
         seats = (1..4).map {
-            id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$it")
+            id(
+                """INSERT INTO performance_seats(performance_id, seat_number, price, status)
+                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$it"
+            )
         }
     }
 
@@ -69,32 +80,81 @@ class CancelReservationHoldTest {
         assertEquals("CANCELLED", status(first))
         assertEquals("HELD", status(second))
         assertEquals(1, allocated())
-        assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'AVAILABLE' AND reservation_id IS NULL AND id IN (?, ?)", seats[0], seats[1]))
-        assertEquals(1, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD' AND reservation_id = ?", second))
+        assertEquals(
+            2,
+            count(
+                "SELECT count(*) FROM performance_seats WHERE status = 'AVAILABLE' AND reservation_id IS NULL AND id IN (?, ?)",
+                seats[0],
+                seats[1]
+            )
+        )
+        assertEquals(
+            1,
+            count("SELECT count(*) FROM performance_seats WHERE status = 'HELD' AND reservation_id = ?", second)
+        )
         assertEquals(2, count("SELECT count(*) FROM reservation_items WHERE reservation_id = ?", first))
         assertEquals(1, count("SELECT count(*) FROM reservations WHERE id = ? AND modified_at > '2000-01-01'", first))
-        assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE id IN (?, ?) AND modified_at > '2000-01-01'", seats[0], seats[1]))
+        assertEquals(
+            2,
+            count(
+                "SELECT count(*) FROM performance_seats WHERE id IN (?, ?) AND modified_at > '2000-01-01'",
+                seats[0],
+                seats[1]
+            )
+        )
         assertEquals(1, count("SELECT count(*) FROM concert_purchase_quotas WHERE modified_at > '2000-01-01'"))
     }
 
     @Test
     fun `타인의 예매와 존재하지 않는 예매는 취소할 수 없다`() {
         val reservationId = reserve(seats.take(1))
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(2, reservationId)) }
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, Long.MAX_VALUE)) }
+        assertFailsWith<ReservationRuleViolationException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    2,
+                    reservationId
+                )
+            )
+        }
+        assertFailsWith<ReservationRuleViolationException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    Long.MAX_VALUE
+                )
+            )
+        }
         assertHeld(reservationId, 1)
     }
 
     @Test
     fun `만료 경계와 선점 시각 이전에는 취소할 수 없다`() {
         val reservationId = reserve(seats.take(1))
-        jdbc.update("UPDATE reservations SET held_at = ?, expires_at = ? WHERE id = ?",
-            java.sql.Timestamp.from(now.minusSeconds(300)), java.sql.Timestamp.from(now), reservationId)
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        jdbc.update(
+            "UPDATE reservations SET held_at = ?, expires_at = ? WHERE id = ?",
+            java.sql.Timestamp.from(now.minusSeconds(300)), java.sql.Timestamp.from(now), reservationId
+        )
+        assertFailsWith<ReservationRuleViolationException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         assertHeld(reservationId, 1)
-        jdbc.update("UPDATE reservations SET held_at = ?, expires_at = ? WHERE id = ?",
-            java.sql.Timestamp.from(now.plusSeconds(1)), java.sql.Timestamp.from(now.plusSeconds(300)), reservationId)
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        jdbc.update(
+            "UPDATE reservations SET held_at = ?, expires_at = ? WHERE id = ?",
+            java.sql.Timestamp.from(now.plusSeconds(1)), java.sql.Timestamp.from(now.plusSeconds(300)), reservationId
+        )
+        assertFailsWith<ReservationRuleViolationException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         assertHeld(reservationId, 1)
     }
 
@@ -102,9 +162,18 @@ class CancelReservationHoldTest {
     fun `확정 취소 만료 상태에서는 자원을 반환하지 않는다`() {
         val reservationId = reserve(seats.take(1))
         listOf("CONFIRMED", "CANCELLED", "EXPIRED").forEach { status ->
-            jdbc.update("UPDATE reservations SET status = ?, confirmed_at = ? WHERE id = ?",
-                status, if (status == "CONFIRMED") java.sql.Timestamp.from(now) else null, reservationId)
-            assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+            jdbc.update(
+                "UPDATE reservations SET status = ?, confirmed_at = ? WHERE id = ?",
+                status, if (status == "CONFIRMED") java.sql.Timestamp.from(now) else null, reservationId
+            )
+            assertFailsWith<ReservationRuleViolationException> {
+                holdCancellation.cancelHold(
+                    CancelReservationHoldCommand(
+                        1,
+                        reservationId
+                    )
+                )
+            }
             assertEquals(status, status(reservationId))
             assertEquals(1, allocated())
             assertEquals(1, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
@@ -117,7 +186,7 @@ class CancelReservationHoldTest {
         reserve(seats.drop(2).take(1))
         val results = race(List(8) { reservationId })
         assertEquals(1, results.count { it.isSuccess })
-        results.filter { it.isFailure }.forEach { assertTrue(it.exceptionOrNull() is ReservationRuleViolation) }
+        results.filter { it.isFailure }.forEach { assertTrue(it.exceptionOrNull() is ReservationRuleViolationException) }
         assertEquals("CANCELLED", status(reservationId))
         assertEquals(1, allocated())
         assertEquals(1, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
@@ -128,9 +197,16 @@ class CancelReservationHoldTest {
         val old = reserve(seats.take(1))
         holdCancellation.cancelHold(CancelReservationHoldCommand(1, old))
         val replacement = reserve(seats.take(1))
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, old)) }
+        assertFailsWith<ReservationRuleViolationException> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, old)) }
         assertHeld(replacement, 1)
-        assertEquals(replacement, jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats.first()))
+        assertEquals(
+            replacement,
+            jdbc.queryForObject(
+                "SELECT reservation_id FROM performance_seats WHERE id = ?",
+                Long::class.java,
+                seats.first()
+            )
+        )
     }
 
     @Test
@@ -140,11 +216,20 @@ class CancelReservationHoldTest {
             TransactionTemplate(transactionManager).apply {
                 propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
             }.executeWithoutResult {
-                jdbc.update("UPDATE reservations SET status = 'CONFIRMED', confirmed_at = ? WHERE id = ?",
-                    java.sql.Timestamp.from(now), reservationId)
+                jdbc.update(
+                    "UPDATE reservations SET status = 'CONFIRMED', confirmed_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(now), reservationId
+                )
             }
         }
-        assertFailsWith<ReservationRuleViolation> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        assertFailsWith<ReservationRuleViolationException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         loader.afterRead.set(null)
         assertEquals("CONFIRMED", status(reservationId))
         assertEquals(1, allocated())
@@ -156,19 +241,43 @@ class CancelReservationHoldTest {
         val reservationId = reserve(seats.take(2))
         val other = reserve(seats.drop(2).take(1))
         jdbc.update("UPDATE performance_seats SET reservation_id = ? WHERE id = ?", other, seats[1])
-        assertFailsWith<IllegalStateException> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        assertFailsWith<IllegalStateException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         assertHeld(reservationId, 3)
-        assertEquals(other, jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats[1]))
+        assertEquals(
+            other,
+            jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats[1])
+        )
     }
 
     @Test
     fun `한도가 부족하거나 행이 없으면 상태 전환도 롤백한다`() {
         val reservationId = reserve(seats.take(2))
         jdbc.update("UPDATE concert_purchase_quotas SET allocated_quantity = 1")
-        assertFailsWith<IllegalStateException> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        assertFailsWith<IllegalStateException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         assertHeld(reservationId, 1)
         jdbc.update("DELETE FROM concert_purchase_quotas")
-        assertFailsWith<IllegalStateException> { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) }
+        assertFailsWith<IllegalStateException> {
+            holdCancellation.cancelHold(
+                CancelReservationHoldCommand(
+                    1,
+                    reservationId
+                )
+            )
+        }
         assertHeld(reservationId, 0)
     }
 
@@ -179,7 +288,10 @@ class CancelReservationHoldTest {
         results.forEach { it.getOrThrow() }
         reservations.forEach { assertEquals("CANCELLED", status(it)) }
         assertEquals(0, allocated())
-        assertEquals(4, count("SELECT count(*) FROM performance_seats WHERE status = 'AVAILABLE' AND reservation_id IS NULL"))
+        assertEquals(
+            4,
+            count("SELECT count(*) FROM performance_seats WHERE status = 'AVAILABLE' AND reservation_id IS NULL")
+        )
         reserve(seats)
         assertEquals(4, allocated())
     }
@@ -190,7 +302,16 @@ class CancelReservationHoldTest {
         val executor = Executors.newFixedThreadPool(reservationIds.size)
         return try {
             reservationIds.map { reservationId ->
-                executor.submit<Result<Unit>> { runCatching { holdCancellation.cancelHold(CancelReservationHoldCommand(1, reservationId)) } }
+                executor.submit<Result<Unit>> {
+                    runCatching {
+                        holdCancellation.cancelHold(
+                            CancelReservationHoldCommand(
+                                1,
+                                reservationId
+                            )
+                        )
+                    }
+                }
             }.map { it.get(30, TimeUnit.SECONDS) }
         } finally {
             loader.afterRead.set(null)
@@ -199,26 +320,41 @@ class CancelReservationHoldTest {
         }
     }
 
-    private fun reserve(selected: List<Long>) = create.create(CreateReservationCommand(1, performanceId, selected)).reservationId
-    private fun status(id: Long) = jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
+    private fun reserve(selected: List<Long>) =
+        create.create(CreateReservationCommand(1, performanceId, selected)).reservationId
+
+    private fun status(id: Long) =
+        jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
+
     private fun allocated() = count("SELECT coalesce(sum(allocated_quantity), 0) FROM concert_purchase_quotas")
     private fun assertHeld(id: Long, quota: Int) {
         assertEquals("HELD", status(id))
         assertEquals(quota, allocated())
-        assertEquals(0, count("SELECT count(*) FROM performance_seats WHERE status != 'HELD' AND id IN (SELECT performance_seat_id FROM reservation_items WHERE reservation_id = ?)", id))
+        assertEquals(
+            0,
+            count(
+                "SELECT count(*) FROM performance_seats WHERE status != 'HELD' AND id IN (SELECT performance_seat_id FROM reservation_items WHERE reservation_id = ?)",
+                id
+            )
+        )
     }
+
     private fun count(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Int::class.java, *args)!!
     private fun id(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Long::class.java, *args)!!
 
     @TestConfiguration(proxyBeanMethods = false)
     class Configuration {
-        @Bean @Primary
+        @Bean
+        @Primary
         fun cancellationClock(): Clock = Clock.fixed(Instant.parse("2026-11-04T00:00:00Z"), ZoneOffset.UTC)
-        @Bean @Primary
+
+        @Bean
+        @Primary
         fun coordinatedReservationLoader(adapter: ReservationPersistenceAdapter) = CoordinatedReservationLoader(adapter)
     }
 
-    class CoordinatedReservationLoader(private val delegate: ReservationPersistenceAdapter) : LoadReservationPort {
+    class CoordinatedReservationLoader(private val delegate: ReservationPersistenceAdapter) :
+        ReservationRepositoryPort by delegate {
         val afterRead = AtomicReference<(() -> Unit)?>(null)
         override fun findReservation(reservationId: Long): Reservation? {
             val reservation = delegate.findReservation(reservationId)

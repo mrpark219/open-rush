@@ -1,6 +1,6 @@
 package me.park.openrush.reservation.adapter.input.web
 
-import me.park.openrush.reservation.application.port.input.CreateReservationResult
+import me.park.openrush.reservation.application.provided.CreateReservationResult
 import java.time.Instant
 
 data class CreateReservationResponse(

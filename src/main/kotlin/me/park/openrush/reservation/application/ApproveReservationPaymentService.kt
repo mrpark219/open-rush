@@ -1,15 +1,13 @@
 package me.park.openrush.reservation.application
 
-import me.park.openrush.reservation.application.exception.PaymentRecordConflict
-import me.park.openrush.reservation.application.port.input.ApproveReservationPaymentCommand
-import me.park.openrush.reservation.application.port.input.ApproveReservationPaymentUseCase
-import me.park.openrush.reservation.application.port.input.PrepareReservationPaymentTxUseCase
-import me.park.openrush.reservation.application.port.input.RecordPaymentSuccessUseCase
-import me.park.openrush.reservation.application.port.input.ReservationPaymentResult
-import me.park.openrush.reservation.application.port.output.PaymentGatewayUnavailable
-import me.park.openrush.reservation.application.port.output.ReservationPaymentGateway
-import me.park.openrush.reservation.application.port.output.ReservationPaymentTxPort
-import me.park.openrush.reservation.domain.payment.VerifiedPayment
+import me.park.openrush.payment.application.provided.ApprovePaymentUseCase
+import me.park.openrush.payment.application.provided.ApprovedPayment
+import me.park.openrush.payment.application.provided.PaymentApprovalCommand
+import me.park.openrush.payment.application.exception.PaymentGatewayUnavailableException
+import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
+import me.park.openrush.reservation.application.provided.ReservationPaymentTransactionsUseCase
+import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
+import me.park.openrush.reservation.application.provided.*
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -17,8 +15,8 @@ import org.springframework.transaction.annotation.Transactional
 @Service
 class ApproveReservationPaymentService(
     private val preparations: PrepareReservationPaymentTxUseCase,
-    private val transactions: ReservationPaymentTxPort,
-    private val gateway: ReservationPaymentGateway,
+    private val transactions: ReservationPaymentTransactionsUseCase,
+    private val gateway: ApprovePaymentUseCase,
     private val records: RecordPaymentSuccessUseCase,
 ) : ApproveReservationPaymentUseCase {
     // 준비와 결과 저장만 각각 트랜잭션을 사용하며 PG 호출 중에는 잠금을 유지하지 않는다.
@@ -27,24 +25,43 @@ class ApproveReservationPaymentService(
         val prepared = preparations.prepare(command)
         val tx = prepared.transaction
         transactions.findApproved(tx.provider, command.paymentKey)?.let {
-            if (it.reservationId != command.reservationId || it.pgOrderId != tx.pgOrderId) {
-                throw PaymentRecordConflict()
+            if (it.payment.reservationId != command.reservationId || it.payment.pgOrderNumber != tx.pgOrderNumber) {
+                throw PaymentRecordConflictException()
             }
-            return ReservationPaymentResult(command.reservationId, command.attemptId, it.toPaymentRecord())
+            return ReservationPaymentResult(command.reservationId, command.attemptNumber, it)
         }
 
-        val payment: VerifiedPayment? = try {
-            gateway.findByOrder(tx) ?: if (prepared.approvalAllowed) {
+        val approvalCommand = PaymentApprovalCommand(
+            provider = tx.provider,
+            orderNumber = tx.pgOrderNumber,
+            paymentKey = tx.requestedPaymentKey,
+            amount = tx.amount,
+            idempotencyKey = tx.approvalIdempotencyKey,
+        )
+        val payment: ApprovedPayment? = try {
+            gateway.findByOrder(approvalCommand) ?: if (prepared.approvalAllowed) {
                 try {
-                    gateway.confirm(tx)
-                } catch (_: PaymentGatewayUnavailable) {
+                    gateway.confirm(approvalCommand)
+                } catch (_: PaymentGatewayUnavailableException) {
                     // 승인 응답 유실은 실패로 단정하지 않고 같은 주문으로 조회한다.
-                    gateway.findByOrder(tx)
+                    gateway.findByOrder(approvalCommand)
                 }
             } else null
-        } catch (_: PaymentGatewayUnavailable) {
+        } catch (_: PaymentGatewayUnavailableException) {
             null
         }
-        return ReservationPaymentResult(command.reservationId, command.attemptId, payment?.let(records::record))
+        val record = payment?.let {
+            records.record(
+                RecordPaymentSuccessCommand(
+                    provider = it.provider,
+                    paymentId = it.paymentKey,
+                    reservationId = command.reservationId,
+                    amount = it.amount,
+                    currency = it.currency,
+                    pgOrderNumber = it.orderNumber,
+                )
+            )
+        }
+        return ReservationPaymentResult(command.reservationId, command.attemptNumber, record)
     }
 }

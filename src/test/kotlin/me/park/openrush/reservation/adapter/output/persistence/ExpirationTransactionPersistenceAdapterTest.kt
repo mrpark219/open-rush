@@ -2,7 +2,7 @@ package me.park.openrush.reservation.adapter.output.persistence
 
 import jakarta.persistence.EntityManager
 import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.reservation.application.port.output.ConfigureExpirationTransactionPort
+import me.park.openrush.reservation.application.required.ConfigureExpirationTransactionPort
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -19,14 +19,21 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 @Import(TestcontainersConfiguration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false", "reservation.expiration.lock-timeout-ms=200",
-    "spring.datasource.hikari.maximum-pool-size=1"])
+@SpringBootTest(
+    properties = ["reservation.expiration.enabled=false", "reservation.expiration.lock-timeout-ms=200",
+        "spring.datasource.hikari.maximum-pool-size=1"]
+)
 class ExpirationTransactionPersistenceAdapterTest {
-    @Autowired private lateinit var configuration: ConfigureExpirationTransactionPort
-    @Autowired private lateinit var transactionManager: PlatformTransactionManager
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var entityManager: EntityManager
-    @Autowired private lateinit var postgres: PostgreSQLContainer
+    @Autowired
+    private lateinit var configuration: ConfigureExpirationTransactionPort
+    @Autowired
+    private lateinit var transactionManager: PlatformTransactionManager
+    @Autowired
+    private lateinit var jdbc: JdbcTemplate
+    @Autowired
+    private lateinit var entityManager: EntityManager
+    @Autowired
+    private lateinit var postgres: PostgreSQLContainer
 
     @Test
     fun `커밋 후 같은 풀 연결을 재사용해도 잠금 대기 설정이 남지 않는다`() {

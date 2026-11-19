@@ -1,12 +1,8 @@
 package me.park.openrush.reservation.domain
 
-import me.park.openrush.common.domain.value.Money
-import me.park.openrush.reservation.domain.seat.PerformanceSeat
-import me.park.openrush.reservation.domain.seat.SeatStatus
-import me.park.openrush.reservation.domain.exception.checkRule
 import jakarta.persistence.*
-import me.park.openrush.common.domain.BaseEntity
-import me.park.openrush.concert.domain.Performance
+import me.park.openrush.reservation.domain.exception.checkRule
+import me.park.openrush.support.persistence.BaseEntity
 import java.time.Duration
 import java.time.Instant
 import java.util.*
@@ -14,14 +10,13 @@ import java.util.*
 @Entity
 @Table(name = "reservations")
 class Reservation private constructor(
-    performance: Performance,
+    performanceId: Long,
     userId: Long,
     heldAt: Instant,
     expiresAt: Instant,
 ) : BaseEntity() {
-    @field:ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @field:JoinColumn(name = "performance_id", nullable = false)
-    var performance: Performance = performance
+    @field:Column(name = "performance_id", nullable = false)
+    var performanceId: Long = performanceId
         protected set
 
     @field:Column(nullable = false)
@@ -55,8 +50,8 @@ class Reservation private constructor(
     val quantity: Int get() = reservationItems.size
 
     @get:Transient
-    val totalAmount: Money
-        get() = Money(reservationItems.fold(0L) { sum, item -> Math.addExact(sum, item.price.amount) })
+    val totalAmount: Long
+        get() = reservationItems.fold(0L) { sum, item -> Math.addExact(sum, item.amount) }
 
     fun confirm(userId: Long, now: Instant) {
         validateConfirmation(userId, now)
@@ -95,37 +90,37 @@ class Reservation private constructor(
 
     companion object {
         fun create(
-            performance: Performance,
+            bookingPolicy: ReservationBookingPolicy,
             userId: Long,
-            seats: List<PerformanceSeat>,
+            seats: List<ReservationSeat>,
             now: Instant,
             holdDuration: Duration = Duration.ofMinutes(5),
         ): Reservation {
             require(userId > 0) { "사용자 ID는 양수여야 합니다." }
             require(!holdDuration.isNegative && !holdDuration.isZero) { "선점 시간은 양수여야 합니다." }
 
-            val performanceId = requireNotNull(performance.id) { "저장된 회차가 필요합니다." }
-            checkRule(performance.isBookingOpen(now), "예매 가능한 시간이 아닙니다.")
+            val performanceId = requireNotNull(bookingPolicy.performanceId) { "저장된 회차가 필요합니다." }
+            checkRule(bookingPolicy.isBookingOpen(now), "예매 가능한 시간이 아닙니다.")
 
             checkRule(
-                seats.isNotEmpty() && seats.size <= performance.concert.maxTicketsPerUser,
-                "한 예매에는 1~${performance.concert.maxTicketsPerUser}개 좌석이 필요합니다."
+                seats.isNotEmpty() && seats.size <= bookingPolicy.maxTicketsPerUser,
+                "한 예매에는 1~${bookingPolicy.maxTicketsPerUser}개 좌석이 필요합니다."
             )
 
             val seatIds = seats.map { seat ->
                 requireNotNull(seat.id) { "저장된 좌석이 필요합니다." }
             }
             checkRule(seatIds.distinct().size == seatIds.size, "중복 좌석은 예매할 수 없습니다.")
-            checkRule(seats.all { seat -> seat.performance.id == performanceId }, "같은 회차의 좌석만 예매할 수 있습니다.")
-            checkRule(seats.all { seat -> seat.status == SeatStatus.AVAILABLE }, "이미 점유된 좌석이 있습니다.")
+            checkRule(seats.all { seat -> seat.performanceId == performanceId }, "같은 회차의 좌석만 예매할 수 있습니다.")
+            checkRule(seats.all { seat -> seat.available }, "이미 점유된 좌석이 있습니다.")
 
-            seats.fold(0L) { sum, seat -> Math.addExact(sum, seat.price.amount) }
+            seats.fold(0L) { sum, seat -> Math.addExact(sum, seat.amount) }
 
             val reservation = Reservation(
-                performance,
+                performanceId,
                 userId,
                 now,
-                minOf(now.plus(holdDuration), performance.bookingClosesAt),
+                minOf(now.plus(holdDuration), bookingPolicy.bookingClosesAt),
             )
 
             reservation.reservationItems.addAll(

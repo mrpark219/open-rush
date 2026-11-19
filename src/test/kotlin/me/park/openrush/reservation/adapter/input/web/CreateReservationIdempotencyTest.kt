@@ -2,12 +2,12 @@ package me.park.openrush.reservation.adapter.input.web
 
 import me.park.openrush.TestcontainersConfiguration
 import me.park.openrush.awaitBlockedTransaction
-import me.park.openrush.common.web.GlobalExceptionHandler
-import me.park.openrush.reservation.application.ReservationQueue
-import me.park.openrush.reservation.application.port.input.CreateReservationCommand
-import me.park.openrush.reservation.application.port.input.CreateReservationResult
-import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
-import me.park.openrush.reservation.application.port.input.ExpireReservationHoldUseCase
+import me.park.openrush.queue.application.provided.JoinQueueUseCase
+import me.park.openrush.reservation.application.provided.CreateReservationCommand
+import me.park.openrush.reservation.application.provided.CreateReservationResult
+import me.park.openrush.reservation.application.provided.CreateReservationUseCase
+import me.park.openrush.reservation.application.provided.ExpireReservationHoldUseCase
+import me.park.openrush.support.web.GlobalExceptionHandler
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -32,30 +32,47 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 @Import(TestcontainersConfiguration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false", "reservation.queue.enabled=true",
-    "reservation.queue.admissions-per-second=1000000000"])
+@SpringBootTest(
+    properties = ["reservation.expiration.enabled=false", "queue.enabled=true",
+        "queue.admissions-per-second=1000000000"]
+)
 class CreateReservationIdempotencyTest {
-    @Autowired private lateinit var controller: ReservationController
-    @Autowired private lateinit var detailsController: ReservationDetailsController
-    @Autowired private lateinit var queue: ReservationQueue
-    @Autowired private lateinit var create: CreateReservationUseCase
-    @Autowired private lateinit var expiration: ExpireReservationHoldUseCase
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var transactionManager: PlatformTransactionManager
+    @Autowired
+    private lateinit var controller: ReservationController
+    @Autowired
+    private lateinit var detailsController: ReservationDetailsController
+    @Autowired
+    private lateinit var queue: JoinQueueUseCase
+    @Autowired
+    private lateinit var create: CreateReservationUseCase
+    @Autowired
+    private lateinit var expiration: ExpireReservationHoldUseCase
+    @Autowired
+    private lateinit var jdbc: JdbcTemplate
+    @Autowired
+    private lateinit var transactionManager: PlatformTransactionManager
     private lateinit var mvc: MockMvc
     private var performanceId = 0L
     private lateinit var seats: List<Long>
 
     @BeforeEach
     fun setUp() {
-        mvc = MockMvcBuilders.standaloneSetup(controller, detailsController).setControllerAdvice(GlobalExceptionHandler()).build()
+        mvc =
+            MockMvcBuilders.standaloneSetup(controller, detailsController).setControllerAdvice(GlobalExceptionHandler())
+                .build()
         jdbc.execute("TRUNCATE concerts CASCADE")
-        val concert = id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        performanceId = id("""INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', now() + interval '2 days', now() - interval '1 day', now() + interval '1 day') RETURNING id""", concert)
+        val concert =
+            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
+        performanceId = id(
+            """INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
+            VALUES (?, '공연장', now() + interval '2 days', now() - interval '1 day', now() + interval '1 day') RETURNING id""",
+            concert
+        )
         seats = (1..3).map { number ->
-            id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$number")
+            id(
+                """INSERT INTO performance_seats(performance_id, seat_number, price, status)
+                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$number"
+            )
         }
     }
 
@@ -92,12 +109,14 @@ class CreateReservationIdempotencyTest {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.status").value("HELD"))
 
-        assertEquals(1, jdbc.update(
-            """UPDATE reservations
+        assertEquals(
+            1, jdbc.update(
+                """UPDATE reservations
                 SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute'
                 WHERE id = ?""",
-            reservationId,
-        ))
+                reservationId,
+            )
+        )
         assertTrue(expiration.expireHold(reservationId))
 
         mvc.perform(get(location).param("userId", "1"))
@@ -148,7 +167,11 @@ class CreateReservationIdempotencyTest {
         val executor = Executors.newFixedThreadPool(2)
         try {
             val pending = checkNotNull(TransactionTemplate(transactionManager).execute {
-                jdbc.queryForObject("SELECT id FROM performance_seats WHERE id = ? FOR NO KEY UPDATE", Long::class.java, selected.first())
+                jdbc.queryForObject(
+                    "SELECT id FROM performance_seats WHERE id = ? FOR NO KEY UPDATE",
+                    Long::class.java,
+                    selected.first()
+                )
                 val blockerPid = checkNotNull(jdbc.queryForObject("SELECT pg_backend_pid()", Int::class.java))
                 val first = executor.submit<MockHttpServletResponse> {
                     mvc.perform(request(key, selected, ticket))
@@ -171,8 +194,14 @@ class CreateReservationIdempotencyTest {
             assertEquals(first.contentAsString, retry.contentAsString)
             assertEquals(1, count("reservations"))
             assertEquals(1, count("reservation_creation_records"))
-            assertEquals(2, jdbc.queryForObject("SELECT sum(allocated_quantity) FROM concert_purchase_quotas", Int::class.java))
-            assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM performance_seats WHERE status = 'HELD'", Int::class.java))
+            assertEquals(
+                2,
+                jdbc.queryForObject("SELECT sum(allocated_quantity) FROM concert_purchase_quotas", Int::class.java)
+            )
+            assertEquals(
+                2,
+                jdbc.queryForObject("SELECT count(*) FROM performance_seats WHERE status = 'HELD'", Int::class.java)
+            )
         } finally {
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
@@ -193,7 +222,10 @@ class CreateReservationIdempotencyTest {
             }.map { it.get(10, TimeUnit.SECONDS) }
             assertEquals(results[0], results[1])
             assertEquals(1, count("reservations"))
-            assertEquals(2, jdbc.queryForObject("SELECT sum(allocated_quantity) FROM concert_purchase_quotas", Int::class.java))
+            assertEquals(
+                2,
+                jdbc.queryForObject("SELECT sum(allocated_quantity) FROM concert_purchase_quotas", Int::class.java)
+            )
             val other = create.create(command.copy(userId = 2, seatIds = seats.takeLast(1)))
             assertNotEquals(results[0].reservationId, other.reservationId)
             assertEquals(2, count("reservation_creation_records"))

@@ -4,6 +4,42 @@
 
 공연·회차·좌석 관리, 예매, 동시성 제어, 결제와 대기열을 다룹니다.
 
+## 도메인과 포트 구조
+
+최상위 업무 패키지는 `concert`, `inventory`, `quota`, `reservation`, `payment`, `queue`입니다. 각 도메인은 `domain`, `application`, `application.provided`, `application.required`, `adapter.input`, `adapter.output`으로 구성합니다. 필요한 어댑터만 두며 도메인 간 호출은 상대 도메인의 입력 포트를 직접 사용합니다.
+
+전역 빈 설정은 `config`, 공용 JPA 기반 코드는 `support.persistence`, 공용 HTTP 오류 처리는 `support.web`에 둡니다. 업무 예외는 해당 도메인에 유지합니다. 도메인 규칙 예외는 `domain.exception`, 애플리케이션 예외는 `application.exception`으로 통일합니다. 다른 도메인은 입력 포트와 함께 호출 결과를 나타내는 예외를 참조할 수 있습니다. 대기열 설정은 `queue.*`, 예약 홀드와 만료 설정은 `reservation.*`을 사용하며 기본값은 `application.yaml`에서 확인할 수 있습니다.
+
+`provided`에는 애플리케이션이 제공하는 유스케이스와 입력·결과를 두고, `required`에는 유스케이스가 필요로 하는 저장소와 외부 연동 포트를 둡니다. 저장소 포트는 아래와 같이 도메인 단위로 묶습니다. 예약 생성 요청의 멱등 기록도 `ReservationRepositoryPort`에 포함합니다. PG 연동과 만료 트랜잭션 설정은 저장소와 역할이 달라 별도 포트로 유지합니다.
+
+| 도메인        | 저장소 포트                                                                     |
+|---------------|---------------------------------------------------------------------------------|
+| `concert`     | `ConcertRepositoryPort` — 공연과 회차 조회                                      |
+| `inventory`   | `InventoryRepositoryPort` — 좌석 조회, 홀드, 확정과 반환                        |
+| `quota`       | `PurchaseQuotaRepositoryPort` — 한도 조회, 생성과 수량 변경                     |
+| `reservation` | `ReservationRepositoryPort` — 예약 조회, 저장, 상태 전환, 잠금과 생성 멱등 기록 |
+| `reservation` | `ReservationPaymentRepositoryPort` — 예약 결제 준비와 승인 이력 조회 및 저장 |
+| `queue`       | `QueueStorePort` — 대기표와 입장 허가 상태 관리                                 |
+
+| 도메인        | 소유 데이터와 책임                                            |
+|---------------|---------------------------------------------------------------|
+| `concert`     | 공연, 회차, 예매 기간과 공연에 설정된 구매 제한 조회          |
+| `inventory`   | 회차별 좌석 가격과 재고, 홀드, 확정, 반환                     |
+| `quota`       | 사용자별 공연 구매 수량 확보와 반환                           |
+| `reservation` | 예약과 가격 스냅샷, 결제 거래 이력, 예약 확정과 환불 필요 상태 관리 |
+| `payment`     | 예약 정보에 의존하지 않는 PG 승인과 조회 |
+| `queue`       | 대기표와 입장 허가, 메모리 저장 어댑터                        |
+
+각 도메인의 기본 구현은 `ConcertService`, `InventoryService`, `QuotaService`, `ReservationService`, `PaymentService`, `QueueService`입니다. 예약 생성의 충돌 재시도, 만료 배치의 건별 트랜잭션, PG 호출 전후의 트랜잭션 분리가 필요한 조율 클래스는 별도로 유지합니다. `output.local` 어댑터는 사용하지 않습니다.
+
+저장소는 도메인별 출력 포트와 JPA/Querydsl 어댑터로 연결하고, PG는 결제 도메인의 `PaymentGatewayPort`와 Demo PG 어댑터로 연결합니다. 예약은 재고와 구매 한도 도메인의 엔티티나 저장소를 직접 참조하지 않습니다. 예약 결제 거래와 처리 결과는 `reservation`이 소유하고, `payment`에는 예약 ID나 예약 처리 상태를 전달하지 않습니다. 공개 입력 포트에서는 DTO와 값 객체를 사용하며, 엔티티 간의 도메인 외부 참조는 ID로 저장합니다. 도메인 객체와 JPA 엔티티를 함께 사용하는 방식은 유지합니다.
+
+PersistenceAdapter는 Repository에 DB 작업을 위임합니다. EntityManager, Querydsl과 직접 실행하는 SQL은 Repository 구현에서 사용합니다. 좌석과 예약 항목의 금액은 별도 값 객체 없이 원 단위 `amount: Long`으로 저장하며, 예약 합계 `totalAmount`도 Long입니다. 음수 검증과 합산 오버플로 검사는 유지합니다.
+
+현재는 단일 DB를 사용하며 예약 생성, 재고 홀드, 한도 확보가 같은 트랜잭션에 참여합니다. 테이블과 DB 외래 키는 유지합니다. PG 호출은 DB 트랜잭션 밖에서 실행합니다. 멀티 모듈, 서비스별 DB, Outbox와 Kafka는 후속 단계입니다. 도메인 간 구현체 및 엔티티 참조를 제한하는 `DomainBoundariesTest`를 제공합니다.
+
+DB 기본 키와 외래 키는 `id`/`...Id`, 결제 시도 UUID는 `attemptNumber`, UUID 기반 PG 주문 번호는 `pgOrderNumber`로 구분합니다. 예약 결제 요청과 응답도 `attemptNumber`를 사용합니다. Demo PG의 외부 JSON 필드 `orderId`는 해당 API 규약을 유지하고 어댑터에서 내부 주문 번호와 변환합니다. 기존 DB 컬럼은 V7 마이그레이션에서 `attempt_number`, `pg_order_number`로 이름만 변경하여 이력을 보존합니다.
+
 ## 개발 환경 실행
 
 JDK 25와 Docker Compose가 필요합니다. Compose로 PostgreSQL 18을 실행한 뒤 애플리케이션을 시작합니다.
@@ -70,19 +106,23 @@ docker compose up -d --wait
 
 ### 예약 결제 승인 API
 
-`POST /reservations/{reservationId}/payments/confirm`은 `userId`, `attemptId`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
+`POST /reservations/{reservationId}/payments/confirm`은 `userId`, `attemptNumber`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
 
 준비 이력을 커밋한 뒤 DB 트랜잭션 밖에서 PG 주문을 조회하고, 아직 승인되지 않았고 예약이 유효하면 승인합니다. 승인 응답은 `DONE`, 주문 ID, 결제 키를 검증하며 금액과 통화 불일치는 환불 필요로 기록합니다. 결과 저장과 예약 확정은 하나의 새 트랜잭션으로 처리합니다. 완료된 동일 요청은 PG 호출 없이 저장된 결과를 반환합니다.
 
-| HTTP | status 또는 code | 의미 |
-| --- | --- | --- |
-| 200 | `RESERVATION_CONFIRMED` | 승인 이력 저장과 예약 확정 완료 |
-| 200 | `REFUND_REQUIRED` | PG 승인 완료, 금액 불일치 또는 예약 확정 불가로 환불 필요 |
-| 202 | `PENDING` | PG 승인 여부 확인 필요 |
-| 409 | `PAYMENT_CONFLICT` | 같은 시도의 결제 키 또는 기존 승인 정보 충돌 |
-| 422 | `PAYMENT_REJECTED` | PG가 승인을 명시적으로 거절 |
+| HTTP | status 또는 code        | 의미                                                      |
+|------|-------------------------|-----------------------------------------------------------|
+| 200  | `RESERVATION_CONFIRMED` | 승인 이력 저장과 예약 확정 완료                           |
+| 200  | `REFUND_REQUIRED`       | PG 승인 완료, 금액 불일치 또는 예약 확정 불가로 환불 필요 |
+| 202  | `PENDING`               | PG 승인 여부 확인 필요                                    |
+| 409  | `PAYMENT_CONFLICT`      | 같은 시도의 결제 키 또는 기존 승인 정보 충돌              |
+| 422  | `PAYMENT_REJECTED`      | PG가 승인을 명시적으로 거절                               |
 
 타임아웃과 PG 서버 오류가 발생하면 같은 주문을 한 번 조회합니다. 조회로도 승인 여부를 확인할 수 없으면 `PENDING`을 반환합니다. 클라이언트는 동일한 요청 본문으로 재요청하여 결과를 확인할 수 있습니다. 기존 시도는 예약이 만료되어도 조회할 수 있지만 새 승인은 하지 않습니다. 자동 복구 스케줄러는 아직 없습니다. PG 승인 후 DB 저장이 실패해도 준비 이력이 남으므로 재요청에서 주문 조회로 복구합니다.
+
+예약 결제 유스케이스의 입력은 `RecordPaymentSuccessCommand`, 승인 후 예약 처리 결과는 `ReservationPaymentApprovalResult`로 전달합니다. 두 객체는 `reservation.application.provided`에 두며, 거래 엔티티는 이 DTO에 의존하지 않습니다. `ReservationBookingPolicy`는 예약 생성 시 예매 가능 시간과 구매 제한을 판단하는 도메인 객체입니다.
+
+취소 준비는 승인 이력에서 `CANCEL_PREPARED` 행을 추가하는 방식입니다. 취소 시도 UUID인 `cancellationNumber`, 취소 금액, 사유와 고정 멱등 키를 보존하고, 완료 시 같은 취소 번호로 `CANCELED` 행을 추가합니다. V8 마이그레이션은 기존 취소 이력을 보존하면서 준비와 완료의 중복 저장을 제한합니다. 현재는 이력 생성과 저장, 조회까지 지원하며 PG 취소 API, 남은 취소 가능 금액의 동시성 제어, 재시도 실행과 복구 스케줄러는 아직 구현하지 않았습니다.
 
 ### Demo PG HTTP 클라이언트
 
@@ -95,7 +135,7 @@ docker compose up -d --wait
 예매 생성 도메인 테스트:
 
 ```shell
-./gradlew test --tests 'me.park.openrush.domain.*'
+./gradlew test --tests 'me.park.openrush.reservation.domain.*'
 ```
 
 전체 테스트에는 Docker가 필요합니다. Testcontainers가 별도의 PostgreSQL을 실행합니다.
