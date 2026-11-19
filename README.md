@@ -64,9 +64,25 @@ docker compose up -d --wait
 
 `RecordPaymentSuccessUseCase`는 결제 성공과 가맹점 주문의 예매 연결을 검증한 입력을 받습니다. 예매 금액 단위는 원(KRW)입니다.
 금액과 통화가 일치하면 예매 확정과 결제 결과를 같은 트랜잭션으로 기록합니다. 결제사와 결제 ID가 같고 나머지 입력도 같으면 기존 결과를 반환합니다.
-금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 결제사 검증과 실제 환불 호출은 결제 어댑터 연동 범위입니다.
+금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 실제 환불 호출은 후속 구현 범위입니다.
 
 `reservation_payment_tx`는 예매별 결제 이력을 저장합니다. 승인 준비(`APPROVAL_PREPARED`), 승인 완료(`APPROVED`), 취소(`CANCELED`)는 각각 별도의 행입니다. 같은 결제 시도의 재요청에는 준비 단계에서 저장한 PG 주문 ID와 승인 멱등성 키를 재사용합니다. 과거 결제 성공 기록은 승인 완료 행으로 이전합니다.
+
+### 예약 결제 승인 API
+
+`POST /reservations/{reservationId}/payments/confirm`은 `userId`, `attemptId`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
+
+준비 이력을 커밋한 뒤 DB 트랜잭션 밖에서 PG 주문을 조회하고, 아직 승인되지 않았고 예약이 유효하면 승인합니다. 승인 응답은 `DONE`, 주문 ID, 결제 키를 검증하며 금액과 통화 불일치는 환불 필요로 기록합니다. 결과 저장과 예약 확정은 하나의 새 트랜잭션으로 처리합니다. 완료된 동일 요청은 PG 호출 없이 저장된 결과를 반환합니다.
+
+| HTTP | status 또는 code | 의미 |
+| --- | --- | --- |
+| 200 | `RESERVATION_CONFIRMED` | 승인 이력 저장과 예약 확정 완료 |
+| 200 | `REFUND_REQUIRED` | PG 승인 완료, 금액 불일치 또는 예약 확정 불가로 환불 필요 |
+| 202 | `PENDING` | PG 승인 여부 확인 필요 |
+| 409 | `PAYMENT_CONFLICT` | 같은 시도의 결제 키 또는 기존 승인 정보 충돌 |
+| 422 | `PAYMENT_REJECTED` | PG가 승인을 명시적으로 거절 |
+
+타임아웃과 PG 서버 오류가 발생하면 같은 주문을 한 번 조회합니다. 조회로도 승인 여부를 확인할 수 없으면 `PENDING`을 반환합니다. 클라이언트는 동일한 요청 본문으로 재요청하여 결과를 확인할 수 있습니다. 기존 시도는 예약이 만료되어도 조회할 수 있지만 새 승인은 하지 않습니다. 자동 복구 스케줄러는 아직 없습니다. PG 승인 후 DB 저장이 실패해도 준비 이력이 남으므로 재요청에서 주문 조회로 복구합니다.
 
 ### Demo PG HTTP 클라이언트
 

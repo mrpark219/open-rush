@@ -1,0 +1,18 @@
+@baseUrl = http://127.0.0.1:8080
+@reservationId = 1
+@userId = 1
+@attemptId = 8c514efc-142b-4ec3-96df-c041287f1769
+@paymentKey = PK-OPEN-RUSH-001
+
+### 예약 결제 승인
+# 유효한 선점 예약 ID를 사용합니다. 금액은 서버가 예약에서 읽습니다.
+# 같은 시도의 재요청은 attemptId와 paymentKey를 유지합니다.
+# 202 PENDING이면 같은 요청으로 결과를 다시 확인합니다.
+POST {{baseUrl}}/reservations/{{reservationId}}/payments/confirm
+Content-Type: application/json
+
+{
+  "userId": {{userId}},
+  "attemptId": "{{attemptId}}",
+  "paymentKey": "{{paymentKey}}"
+}

@@ -1,6 +1,9 @@
 package me.park.openrush.reservation.application
 
 import me.park.openrush.reservation.application.port.input.PrepareReservationPaymentTxUseCase
+import me.park.openrush.reservation.application.port.input.ApproveReservationPaymentCommand
+import me.park.openrush.reservation.application.port.input.PreparedReservationPayment
+import me.park.openrush.reservation.application.exception.PaymentAttemptConflict
 import me.park.openrush.reservation.application.port.output.LockReservationForPaymentPort
 import me.park.openrush.reservation.application.port.output.ReservationPaymentTxPort
 import me.park.openrush.reservation.domain.ReservationStatus
@@ -9,7 +12,6 @@ import me.park.openrush.reservation.domain.payment.ReservationPaymentTx
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
-import java.util.UUID
 
 @Service
 class PrepareReservationPaymentTxService(
@@ -18,22 +20,20 @@ class PrepareReservationPaymentTxService(
     private val clock: Clock,
 ) : PrepareReservationPaymentTxUseCase {
     @Transactional
-    override fun prepare(reservationId: Long, userId: Long, attemptId: UUID): ReservationPaymentTx {
-        require(reservationId > 0 && userId > 0) { "예매 ID와 사용자 ID는 양수여야 합니다." }
-        val reservation = reservations.lockOwnedReservation(reservationId, userId)
+    override fun prepare(command: ApproveReservationPaymentCommand): PreparedReservationPayment {
+        val reservation = reservations.lockOwnedReservation(command.reservationId, command.userId)
             ?: throw ReservationRuleViolation("결제할 수 있는 예매가 없습니다.")
-
         val now = clock.reservationTimestamp()
-        if (reservation.status != ReservationStatus.HELD || now < reservation.heldAt || now >= reservation.expiresAt) {
-            throw ReservationRuleViolation("유효한 선점 예매만 결제할 수 있습니다.")
+        val allowed = reservation.status == ReservationStatus.HELD && now >= reservation.heldAt && now < reservation.expiresAt
+        paymentTransactions.findByAttempt(command.reservationId, command.attemptId)?.let {
+            if (it.requestedPaymentKey != command.paymentKey) throw PaymentAttemptConflict()
+            return PreparedReservationPayment(it, allowed)
         }
-
-        paymentTransactions.findByAttempt(reservationId, attemptId)?.let { return it }
+        if (!allowed) throw ReservationRuleViolation("유효한 선점 예매만 결제할 수 있습니다.")
         val amount = reservation.totalAmount.amount
         if (amount <= 0) throw ReservationRuleViolation("결제 금액은 양수여야 합니다.")
-
-        val paymentTx = ReservationPaymentTx.prepare(reservationId, attemptId, amount)
-        paymentTransactions.save(paymentTx)
-        return paymentTx
+        val tx = ReservationPaymentTx.prepare(command.reservationId, command.attemptId, amount, command.paymentKey)
+        paymentTransactions.save(tx)
+        return PreparedReservationPayment(tx, true)
     }
 }

@@ -4,6 +4,9 @@ import me.park.openrush.common.exception.ConcurrencyException
 import me.park.openrush.reservation.application.QueueError
 import me.park.openrush.reservation.application.QueueException
 import me.park.openrush.reservation.application.exception.ReservationIdempotencyConflict
+import me.park.openrush.reservation.application.exception.PaymentAttemptConflict
+import me.park.openrush.reservation.application.exception.PaymentRecordConflict
+import me.park.openrush.reservation.application.port.output.PaymentGatewayRejected
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolation
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -14,6 +17,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
+    @ExceptionHandler(PaymentAttemptConflict::class, PaymentRecordConflict::class)
+    fun paymentConflict(exception: RuntimeException): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ErrorResponse("PAYMENT_CONFLICT", checkNotNull(exception.message)))
+
+    @ExceptionHandler(PaymentGatewayRejected::class)
+    fun paymentRejected(): ResponseEntity<ErrorResponse> =
+        ResponseEntity.unprocessableContent().body(ErrorResponse("PAYMENT_REJECTED", "PG가 결제 승인을 거절했습니다."))
+
     @ExceptionHandler(ReservationIdempotencyConflict::class)
     fun idempotency(exception: ReservationIdempotencyConflict): ResponseEntity<ErrorResponse> =
         ResponseEntity.status(HttpStatus.CONFLICT)

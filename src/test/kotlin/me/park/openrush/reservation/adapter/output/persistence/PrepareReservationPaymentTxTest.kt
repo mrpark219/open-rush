@@ -6,6 +6,7 @@ import me.park.openrush.reservation.application.port.input.CancelReservationHold
 import me.park.openrush.reservation.application.port.input.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.port.input.CreateReservationCommand
 import me.park.openrush.reservation.application.port.input.CreateReservationUseCase
+import me.park.openrush.reservation.application.port.input.ApproveReservationPaymentCommand
 import me.park.openrush.reservation.application.port.input.PrepareReservationPaymentTxUseCase
 import me.park.openrush.reservation.application.port.input.RecordPaymentSuccessUseCase
 import me.park.openrush.reservation.application.port.output.ReservationPaymentTxPort
@@ -64,15 +65,16 @@ class PrepareReservationPaymentTxTest {
     fun `선점한 예매 금액으로 거래를 저장하고 같은 시도에는 기존 주문과 키를 반환한다`() {
         val reservationId = hold(15000, 20000)
 
-        val order = preparePaymentTx.prepare(reservationId, 1L, attemptId)
+        val order = prepare(reservationId, 1L, attemptId)
 
         assertEquals(reservationId, order.reservationId)
         assertEquals(attemptId, order.attemptId)
+        assertEquals("PK-$attemptId", order.requestedPaymentKey)
         assertEquals(35000L, order.amount)
         assertTrue(requireNotNull(order.pgOrderId).matches(Regex("[a-zA-Z0-9_-]{6,64}")))
         assertEquals("confirm-${order.pgOrderId}", order.approvalIdempotencyKey)
         assertEquals(order.id, paymentTransactions.findByAttempt(reservationId, attemptId)?.id)
-        assertEquals(order.id, preparePaymentTx.prepare(reservationId, 1L, attemptId).id)
+        assertEquals(order.id, prepare(reservationId, 1L, attemptId).id)
         assertEquals(1, paymentTxCount())
         assertEquals("HELD", jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId))
     }
@@ -86,7 +88,7 @@ class PrepareReservationPaymentTxTest {
             val requests = List(2) {
                 executor.submit<ReservationPaymentTx> {
                     barrier.await(5, TimeUnit.SECONDS)
-                    preparePaymentTx.prepare(reservationId, 1L, attemptId)
+                    prepare(reservationId, 1L, attemptId)
                 }
             }
             val results = requests.map { it.get(10, TimeUnit.SECONDS) }
@@ -102,8 +104,8 @@ class PrepareReservationPaymentTxTest {
         val reservationId = hold(15000)
         val secondAttemptId = UUID.randomUUID()
 
-        val first = preparePaymentTx.prepare(reservationId, 1L, attemptId)
-        val second = preparePaymentTx.prepare(reservationId, 1L, secondAttemptId)
+        val first = prepare(reservationId, 1L, attemptId)
+        val second = prepare(reservationId, 1L, secondAttemptId)
 
         assertEquals(first.reservationId, second.reservationId)
         assertEquals(first.amount, second.amount)
@@ -118,7 +120,7 @@ class PrepareReservationPaymentTxTest {
     @Test
     fun `승인과 부분 취소는 준비 행과 동일한 PG 주문 ID로 각각 누적할 수 있다`() {
         val reservationId = hold(15000)
-        val preparation = preparePaymentTx.prepare(reservationId, 1L, attemptId)
+        val preparation = prepare(reservationId, 1L, attemptId)
         val payment = VerifiedPayment(preparation.provider, "payment-1", reservationId, 15000, "KRW", preparation.pgOrderId)
 
         val approved = recordPayment.record(payment)
@@ -204,8 +206,8 @@ class PrepareReservationPaymentTxTest {
     @Test
     fun `타인의 예매와 존재하지 않는 예매는 결제 주문을 생성할 수 없다`() {
         val reservationId = hold(15000)
-        assertFailsWith<ReservationRuleViolation> { preparePaymentTx.prepare(reservationId, 2L, attemptId) }
-        assertFailsWith<ReservationRuleViolation> { preparePaymentTx.prepare(Long.MAX_VALUE, 1L, attemptId) }
+        assertFailsWith<ReservationRuleViolation> { prepare(reservationId, 2L, attemptId) }
+        assertFailsWith<ReservationRuleViolation> { prepare(Long.MAX_VALUE, 1L, attemptId) }
         assertEquals(0, paymentTxCount())
     }
 
@@ -221,17 +223,21 @@ class PrepareReservationPaymentTxTest {
         )
         cancelHold.cancelHold(CancelReservationHoldCommand(1L, cancelledHold))
 
-        assertFailsWith<ReservationRuleViolation> { preparePaymentTx.prepare(expiredHold, 1L, attemptId) }
-        assertFailsWith<ReservationRuleViolation> { preparePaymentTx.prepare(cancelledHold, 1L, attemptId) }
+        assertFailsWith<ReservationRuleViolation> { prepare(expiredHold, 1L, attemptId) }
+        assertFailsWith<ReservationRuleViolation> { prepare(cancelledHold, 1L, attemptId) }
         assertEquals(0, paymentTxCount())
     }
 
     @Test
     fun `금액이 0원인 예매는 결제 주문을 생성할 수 없다`() {
         val reservationId = hold(0)
-        assertFailsWith<ReservationRuleViolation> { preparePaymentTx.prepare(reservationId, 1L, attemptId) }
+        assertFailsWith<ReservationRuleViolation> { prepare(reservationId, 1L, attemptId) }
         assertEquals(0, paymentTxCount())
     }
+
+    private fun prepare(reservationId: Long, userId: Long, attemptId: UUID) = preparePaymentTx.prepare(
+        ApproveReservationPaymentCommand(reservationId, userId, attemptId, "PK-$attemptId"),
+    ).transaction
 
     private fun hold(vararg prices: Long): Long {
         val seatIds = prices.map { price ->

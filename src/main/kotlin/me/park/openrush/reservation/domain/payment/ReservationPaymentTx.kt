@@ -29,6 +29,8 @@ class ReservationPaymentTx private constructor(
     val pgOrderId: String? = null,
     @field:Column(length = 128)
     val approvalIdempotencyKey: String? = null,
+    @field:Column(length = 200)
+    val requestedPaymentKey: String? = null,
     @field:Column(length = 255)
     val paymentId: String? = null,
     @field:Column(length = 255)
@@ -70,12 +72,14 @@ class ReservationPaymentTx private constructor(
     }
 
     companion object {
-        fun prepare(reservationId: Long, attemptId: UUID, amount: Long): ReservationPaymentTx {
+        fun prepare(reservationId: Long, attemptId: UUID, amount: Long, paymentKey: String): ReservationPaymentTx {
             require(reservationId > 0 && amount > 0)
+            require(paymentKey.isNotBlank() && paymentKey.length <= 200)
             val pgOrderId = "OR-${UUID.randomUUID()}"
             return ReservationPaymentTx(
                 reservationId, ReservationPaymentTxType.APPROVAL_PREPARED, "demo-pg", amount,
                 attemptId = attemptId, pgOrderId = pgOrderId, approvalIdempotencyKey = "confirm-$pgOrderId",
+                requestedPaymentKey = paymentKey,
             )
         }
 
