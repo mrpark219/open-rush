@@ -41,12 +41,16 @@ import kotlin.test.assertTrue
 class ApproveReservationPaymentTest {
     @Autowired
     private lateinit var controller: ReservationPaymentController
+
     @Autowired
     private lateinit var advice: GlobalExceptionHandler
+
     @Autowired
     private lateinit var reservations: CreateReservationUseCase
+
     @Autowired
     private lateinit var jdbc: JdbcTemplate
+
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
     private lateinit var mvc: MockMvc
@@ -291,7 +295,7 @@ class ApproveReservationPaymentTest {
         expire()
         respond = { it.reply(200, done()) }
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
-        assertEquals(listOf("GET", "GET"), requests.map { it.first })
+        assertEquals(listOf("GET", "GET", "POST"), requests.map { it.first })
     }
 
     @Test
@@ -373,6 +377,7 @@ class ApproveReservationPaymentTest {
 
     companion object {
         private val requests = CopyOnWriteArrayList<Pair<String, String>>()
+
         @Volatile
         private var respond: (HttpExchange) -> Unit = { it.reply(500, "{}") }
         private val pgExecutor = Executors.newCachedThreadPool()

@@ -37,6 +37,7 @@ import kotlin.test.assertTrue
 class DemoPgClientTest {
     @Autowired
     private lateinit var client: DemoPgClient
+
     @Autowired
     private lateinit var json: ObjectMapper
 
@@ -44,6 +45,24 @@ class DemoPgClientTest {
     fun setUp() {
         requests.clear()
         respond = { error("테스트에서 PG 응답을 설정해야 합니다.") }
+    }
+
+    @Test
+    fun `취소 요청은 결제 키와 멱등 키 및 취소 금액을 전달한다`() {
+        respond = {
+            it.reply(
+                200,
+                """{"paymentKey":"PK-1001","orderId":"ORDER-1001","currency":"KRW","totalAmount":15000,"balanceAmount":0,"status":"CANCELED","cancels":[{"transactionKey":"CANCEL-1","cancelAmount":15000,"cancelReason":"예약 확정 실패","cancelStatus":"DONE"}]}"""
+            )
+        }
+        val response = client.cancel("PK-1001", "cancel-order-1001", DemoPgCancelRequest("예약 확정 실패", 15000))
+        val request = requests.single()
+        assertEquals("POST", request.method)
+        assertEquals("/v1/payments/PK-1001/cancel", request.path)
+        assertEquals("cancel-order-1001", request.idempotencyKey)
+        assertEquals(15000L, json.readTree(request.body)["cancelAmount"].asLong())
+        assertEquals("예약 확정 실패", json.readTree(request.body)["cancelReason"].asString())
+        assertEquals("CANCEL-1", response.cancels.single().transactionKey)
     }
 
     @Test
@@ -143,6 +162,7 @@ class DemoPgClientTest {
         private val approvalRequest = DemoPgConfirmRequest("PK-1001", "ORDER-1001", 15000)
         private val requests = CopyOnWriteArrayList<RecordedRequest>()
         private val serverExecutor = Executors.newCachedThreadPool()
+
         @Volatile
         private var respond: (HttpExchange) -> Unit = {}
         private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {

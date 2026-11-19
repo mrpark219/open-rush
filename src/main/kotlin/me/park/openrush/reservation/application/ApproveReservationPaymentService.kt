@@ -1,13 +1,12 @@
 package me.park.openrush.reservation.application
 
+import me.park.openrush.payment.application.exception.PaymentGatewayUnavailableException
 import me.park.openrush.payment.application.provided.ApprovePaymentUseCase
 import me.park.openrush.payment.application.provided.ApprovedPayment
 import me.park.openrush.payment.application.provided.PaymentApprovalCommand
-import me.park.openrush.payment.application.exception.PaymentGatewayUnavailableException
 import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
-import me.park.openrush.reservation.application.provided.ReservationPaymentTransactionsUseCase
-import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
 import me.park.openrush.reservation.application.provided.*
+import me.park.openrush.reservation.domain.PaymentStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -18,6 +17,7 @@ class ApproveReservationPaymentService(
     private val transactions: ReservationPaymentTransactionsUseCase,
     private val gateway: ApprovePaymentUseCase,
     private val records: RecordPaymentSuccessUseCase,
+    private val refunds: RefundReservationPaymentUseCase,
 ) : ApproveReservationPaymentUseCase {
     // 준비와 결과 저장만 각각 트랜잭션을 사용하며 PG 호출 중에는 잠금을 유지하지 않는다.
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -28,7 +28,7 @@ class ApproveReservationPaymentService(
             if (it.payment.reservationId != command.reservationId || it.payment.pgOrderNumber != tx.pgOrderNumber) {
                 throw PaymentRecordConflictException()
             }
-            return ReservationPaymentResult(command.reservationId, command.attemptNumber, it)
+            return result(command, it)
         }
 
         val approvalCommand = PaymentApprovalCommand(
@@ -62,6 +62,22 @@ class ApproveReservationPaymentService(
                 )
             )
         }
-        return ReservationPaymentResult(command.reservationId, command.attemptNumber, record)
+        return result(command, record)
+    }
+
+    private fun result(
+        command: ApproveReservationPaymentCommand,
+        record: ReservationPaymentApprovalResult?,
+    ): ReservationPaymentResult {
+        val refund = if (record?.status == PaymentStatus.REFUND_REQUIRED) {
+            refunds.refund(
+                RefundReservationPaymentCommand(
+                    command.reservationId,
+                    command.userId,
+                    command.attemptNumber
+                )
+            )
+        } else null
+        return ReservationPaymentResult(command.reservationId, command.attemptNumber, record, refund)
     }
 }

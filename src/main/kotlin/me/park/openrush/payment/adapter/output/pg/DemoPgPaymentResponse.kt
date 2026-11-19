@@ -7,4 +7,5 @@ data class DemoPgPaymentResponse(
     val totalAmount: Long,
     val balanceAmount: Long,
     val status: String,
+    val cancels: List<DemoPgCancelResponse> = emptyList(),
 )

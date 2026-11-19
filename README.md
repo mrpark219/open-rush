@@ -18,17 +18,17 @@
 | `inventory`   | `InventoryRepositoryPort` — 좌석 조회, 홀드, 확정과 반환                        |
 | `quota`       | `PurchaseQuotaRepositoryPort` — 한도 조회, 생성과 수량 변경                     |
 | `reservation` | `ReservationRepositoryPort` — 예약 조회, 저장, 상태 전환, 잠금과 생성 멱등 기록 |
-| `reservation` | `ReservationPaymentRepositoryPort` — 예약 결제 준비와 승인 이력 조회 및 저장 |
+| `reservation` | `ReservationPaymentRepositoryPort` — 예약 결제 준비와 승인 이력 조회 및 저장    |
 | `queue`       | `QueueStorePort` — 대기표와 입장 허가 상태 관리                                 |
 
-| 도메인        | 소유 데이터와 책임                                            |
-|---------------|---------------------------------------------------------------|
-| `concert`     | 공연, 회차, 예매 기간과 공연에 설정된 구매 제한 조회          |
-| `inventory`   | 회차별 좌석 가격과 재고, 홀드, 확정, 반환                     |
-| `quota`       | 사용자별 공연 구매 수량 확보와 반환                           |
+| 도메인        | 소유 데이터와 책임                                                  |
+|---------------|---------------------------------------------------------------------|
+| `concert`     | 공연, 회차, 예매 기간과 공연에 설정된 구매 제한 조회                |
+| `inventory`   | 회차별 좌석 가격과 재고, 홀드, 확정, 반환                           |
+| `quota`       | 사용자별 공연 구매 수량 확보와 반환                                 |
 | `reservation` | 예약과 가격 스냅샷, 결제 거래 이력, 예약 확정과 환불 필요 상태 관리 |
-| `payment`     | 예약 정보에 의존하지 않는 PG 승인과 조회 |
-| `queue`       | 대기표와 입장 허가, 메모리 저장 어댑터                        |
+| `payment`     | 예약 정보에 의존하지 않는 PG 승인, 조회와 취소                            |
+| `queue`       | 대기표와 입장 허가, 메모리 저장 어댑터                              |
 
 각 도메인의 기본 구현은 `ConcertService`, `InventoryService`, `QuotaService`, `ReservationService`, `PaymentService`, `QueueService`입니다. 예약 생성의 충돌 재시도, 만료 배치의 건별 트랜잭션, PG 호출 전후의 트랜잭션 분리가 필요한 조율 클래스는 별도로 유지합니다. `output.local` 어댑터는 사용하지 않습니다.
 
@@ -101,33 +101,34 @@ docker compose up -d --wait
 
 `RecordPaymentSuccessUseCase`는 결제 성공과 가맹점 주문의 예매 연결을 검증한 입력을 받습니다. 예매 금액 단위는 원(KRW)입니다.
 금액과 통화가 일치하면 예매 확정과 결제 결과를 같은 트랜잭션으로 기록합니다. 결제사와 결제 ID가 같고 나머지 입력도 같으면 기존 결과를 반환합니다.
-금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 실제 환불 호출은 후속 구현 범위입니다.
+금액이나 통화가 다르거나 예매를 확정할 수 없으면 `REFUND_REQUIRED`를 기록합니다. 예약 결제 승인 유스케이스는 이후 내부 환불 유스케이스를 호출합니다.
 
-`reservation_payment_tx`는 예매별 결제 이력을 저장합니다. 승인 준비(`APPROVAL_PREPARED`), 승인 완료(`APPROVED`), 취소(`CANCELED`)는 각각 별도의 행입니다. 같은 결제 시도의 재요청에는 준비 단계에서 저장한 PG 주문 ID와 승인 멱등성 키를 재사용합니다. 과거 결제 성공 기록은 승인 완료 행으로 이전합니다.
+`reservation_payment_tx`는 예매별 결제 이력을 저장합니다. 승인 준비(`APPROVAL_PREPARED`), 승인 완료(`APPROVED`), 취소 준비(`CANCEL_PREPARED`), 취소 완료(`CANCELED`)는 각각 별도의 행입니다. 같은 결제 시도의 재요청에는 준비 단계에서 저장한 PG 주문 ID와 승인 멱등성 키를 재사용합니다. 과거 결제 성공 기록은 승인 완료 행으로 이전합니다.
 
 ### 예약 결제 승인 API
 
 `POST /reservations/{reservationId}/confirm`은 `userId`, `attemptNumber`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
 
-준비 이력을 커밋한 뒤 DB 트랜잭션 밖에서 PG 주문을 조회하고, 아직 승인되지 않았고 예약이 유효하면 승인합니다. 승인 응답은 `DONE`, 주문 ID, 결제 키를 검증하며 금액과 통화 불일치는 환불 필요로 기록합니다. 결과 저장과 예약 확정은 하나의 새 트랜잭션으로 처리합니다. 완료된 동일 요청은 PG 호출 없이 저장된 결과를 반환합니다.
+준비 이력을 커밋한 뒤 DB 트랜잭션 밖에서 PG 주문을 조회하고, 아직 승인되지 않았고 예약이 유효하면 승인합니다. 승인 응답은 `DONE`, 주문 ID, 결제 키를 검증하며 금액과 통화 불일치는 환불 필요로 기록합니다. 결과 저장과 예약 확정은 하나의 새 트랜잭션으로 처리합니다. 예약 확정 실패로 환불이 필요하면 내부 환불 유스케이스를 이어서 호출합니다. 승인과 환불이 완료된 동일 요청은 PG 호출 없이 저장된 결과를 반환합니다.
 
-| HTTP | status 또는 code        | 의미                                                      |
-|------|-------------------------|-----------------------------------------------------------|
-| 200  | `RESERVATION_CONFIRMED` | 승인 이력 저장과 예약 확정 완료                           |
-| 200  | `REFUND_REQUIRED`       | PG 승인 완료, 금액 불일치 또는 예약 확정 불가로 환불 필요 |
-| 202  | `PENDING`               | PG 승인 여부 확인 필요                                    |
-| 409  | `PAYMENT_CONFLICT`      | 같은 시도의 결제 키 또는 기존 승인 정보 충돌              |
-| 422  | `PAYMENT_REJECTED`      | PG가 승인을 명시적으로 거절                               |
+| HTTP | status 또는 code        | 의미                                            |
+|------|-------------------------|-------------------------------------------------|
+| 200  | `RESERVATION_CONFIRMED` | 승인 이력 저장과 예약 확정 완료                 |
+| 200  | `REFUND_REQUIRED`       | PG 승인 기록은 있으나 환불이 아직 완료되지 않음 |
+| 200  | `REFUNDED`              | 예약 확정 실패로 발생한 결제의 전액 환불 완료   |
+| 202  | `PENDING`               | PG 승인 여부 확인 필요                          |
+| 409  | `PAYMENT_CONFLICT`      | 같은 시도의 결제 키 또는 기존 승인 정보 충돌    |
+| 422  | `PAYMENT_REJECTED`      | PG가 승인을 명시적으로 거절                     |
 
 타임아웃과 PG 서버 오류가 발생하면 같은 주문을 한 번 조회합니다. 조회로도 승인 여부를 확인할 수 없으면 `PENDING`을 반환합니다. 클라이언트는 동일한 요청 본문으로 재요청하여 결과를 확인할 수 있습니다. 기존 시도는 예약이 만료되어도 조회할 수 있지만 새 승인은 하지 않습니다. 자동 복구 스케줄러는 아직 없습니다. PG 승인 후 DB 저장이 실패해도 준비 이력이 남으므로 재요청에서 주문 조회로 복구합니다.
 
 예약 결제 유스케이스의 입력은 `RecordPaymentSuccessCommand`, 승인 후 예약 처리 결과는 `ReservationPaymentApprovalResult`로 전달합니다. 두 객체는 `reservation.application.provided`에 두며, 거래 엔티티는 이 DTO에 의존하지 않습니다. `ReservationBookingPolicy`는 예약 생성 시 예매 가능 시간과 구매 제한을 판단하는 도메인 객체입니다.
 
-취소 준비는 승인 이력에서 `CANCEL_PREPARED` 행을 추가하는 방식입니다. 취소 시도 UUID인 `cancellationNumber`, 취소 금액, 사유와 고정 멱등 키를 보존하고, 완료 시 같은 취소 번호로 `CANCELED` 행을 추가합니다. V8 마이그레이션은 기존 취소 이력을 보존하면서 준비와 완료의 중복 저장을 제한합니다. 현재는 이력 생성과 저장, 조회까지 지원하며 PG 취소 API, 남은 취소 가능 금액의 동시성 제어, 재시도 실행과 복구 스케줄러는 아직 구현하지 않았습니다.
+취소 준비는 승인 이력에서 `CANCEL_PREPARED` 행을 추가하는 방식입니다. 취소 시도 UUID인 `cancellationNumber`, 취소 금액, 사유와 고정 멱등 키를 보존하고, 완료 시 같은 취소 번호로 `CANCELED` 행을 추가합니다. V8 마이그레이션은 기존 취소 이력을 보존하면서 준비와 완료의 중복 저장을 제한합니다. 환불은 `REFUND_REQUIRED` 승인에 한해 전액 처리하며 예약 상태, 좌석과 구매 한도는 변경하지 않습니다. 환불용 Controller는 두지 않습니다. 준비 이력을 먼저 커밋하고 DB 트랜잭션 밖에서 PG 취소 API를 호출한 뒤, 예약 잠금 안에서 완료 이력을 저장합니다. 같은 승인에는 같은 환불 번호와 멱등 키를 사용하며, 동시 요청도 준비와 완료를 각각 한 행만 저장합니다. 타임아웃, PG 거절 또는 잘못된 응답에는 완료 이력을 저장하지 않고 `REFUND_REQUIRED`를 반환합니다. 동일한 승인 요청을 재전송하면 미완료 환불을 같은 키로 다시 요청하며, 완료된 환불은 PG를 호출하지 않습니다. 승인 이력의 `REFUND_REQUIRED`는 당시 판단으로 보존하고 최종 환불 여부는 `CANCELED` 이력으로 확인합니다. 부분 환불, 확정된 예약의 취소, Resilience4j 재시도와 자동 복구 스케줄러는 아직 구현하지 않았습니다.
 
 ### Demo PG HTTP 클라이언트
 
-`DemoPgClient`는 OpenFeign과 Apache HttpClient 5로 결제 승인과 주문 ID 조회를 호출합니다. 승인에는 `Idempotency-Key`를 전달합니다. PG 오류 응답은 Feign 예외의 HTTP 상태와 본문에서 확인할 수 있습니다.
+`DemoPgClient`는 OpenFeign과 Apache HttpClient 5로 결제 승인, 주문 ID 조회와 전액 취소를 호출합니다. 승인과 취소에는 `Idempotency-Key`를 전달합니다. PG 오류 응답은 Feign 예외의 HTTP 상태와 본문에서 확인할 수 있습니다.
 
 기본 주소는 `http://127.0.0.1:8082`입니다. 같은 Docker 네트워크에서는 `PAYMENT_DEMO_PG_BASE_URL=http://demo-pg:8082`를 사용합니다. `application.yaml`에서 풀 크기와 획득 대기 시간, 연결 및 읽기 타임아웃을 조정할 수 있습니다.
 
