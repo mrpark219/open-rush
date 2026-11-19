@@ -1,8 +1,8 @@
 import http from 'k6/http';
 import execution from 'k6/execution';
-import { Counter, Rate } from 'k6/metrics';
-import { isBusinessRejection, positiveInteger, post } from './requests.js';
-import { selectScenario } from './scenarios.js';
+import {Counter, Rate} from 'k6/metrics';
+import {isBusinessRejection, positiveInteger, post} from './requests.js';
+import {selectScenario} from './scenarios.js';
 
 const requestCount = positiveInteger(__ENV.REQUESTS || '1000', 'REQUESTS');
 const users = positiveInteger(__ENV.VUS || '16', 'VUS');
@@ -15,55 +15,55 @@ const rejections = new Counter('reservation_rejections');
 const unexpectedResponses = new Rate('unexpected_responses');
 
 export const options = {
-  scenarios: {
-    reservations: {
-      executor: 'shared-iterations',
-      vus: users,
-      iterations: requestCount,
-      maxDuration: '4m',
+    scenarios: {
+        reservations: {
+            executor: 'shared-iterations',
+            vus: users,
+            iterations: requestCount,
+            maxDuration: '4m',
+        },
     },
-  },
-  summaryTrendStats: ['avg', 'p(95)', 'p(99)', 'max'],
-  thresholds: {
-    reservation_successes: [`count == ${expectedSuccesses}`],
-    reservation_rejections: [`count == ${requestCount - expectedSuccesses}`],
-    unexpected_responses: ['rate == 0'],
-    iterations: [`count == ${requestCount}`],
-  },
+    summaryTrendStats: ['avg', 'p(95)', 'p(99)', 'max'],
+    thresholds: {
+        reservation_successes: [`count == ${expectedSuccesses}`],
+        reservation_rejections: [`count == ${requestCount - expectedSuccesses}`],
+        unexpected_responses: ['rate == 0'],
+        iterations: [`count == ${requestCount}`],
+    },
 };
 
 http.setResponseCallback(http.expectedStatuses(201, 409));
 
 export default function () {
-  const request = scenario.request(execution.scenario.iterationInTest);
-  const response = post('/reservations', request);
+    const request = scenario.request(execution.scenario.iterationInTest);
+    const response = post('/reservations', request);
 
-  const successful = response.status === 201;
-  const rejected = isBusinessRejection(response);
+    const successful = response.status === 201;
+    const rejected = isBusinessRejection(response);
 
-  successes.add(successful ? 1 : 0);
-  rejections.add(rejected ? 1 : 0);
-  unexpectedResponses.add(!successful && !rejected);
+    successes.add(successful ? 1 : 0);
+    rejections.add(rejected ? 1 : 0);
+    unexpectedResponses.add(!successful && !rejected);
 }
 
 export function handleSummary(data) {
-  const metrics = data.metrics;
-  const duration = metrics.http_req_duration.values;
-  const summary = {
-    scenario: scenarioName,
-    requests: requestCount,
-    users,
-    expectedSuccesses,
-    ...data,
-  };
+    const metrics = data.metrics;
+    const duration = metrics.http_req_duration.values;
+    const summary = {
+        scenario: scenarioName,
+        requests: requestCount,
+        users,
+        expectedSuccesses,
+        ...data,
+    };
 
-  return {
-    [__ENV.SUMMARY || 'summary.json']: JSON.stringify(summary, null, 2),
-    stdout: [
-      `${scenarioName}: ${metrics.reservation_successes.values.count} successes, ${metrics.reservation_rejections.values.count} rejections`,
-      `RPS ${metrics.http_reqs.values.rate.toFixed(1)} / success RPS ${metrics.reservation_successes.values.rate.toFixed(1)}`,
-      `p95 ${duration['p(95)'].toFixed(1)} ms / p99 ${duration['p(99)'].toFixed(1)} ms`,
-      `Unexpected responses: ${(metrics.unexpected_responses.values.rate * 100).toFixed(1)}%\n`,
-    ].join('\n'),
-  };
+    return {
+        [__ENV.SUMMARY || 'summary.json']: JSON.stringify(summary, null, 2),
+        stdout: [
+            `${scenarioName}: ${metrics.reservation_successes.values.count} successes, ${metrics.reservation_rejections.values.count} rejections`,
+            `RPS ${metrics.http_reqs.values.rate.toFixed(1)} / success RPS ${metrics.reservation_successes.values.rate.toFixed(1)}`,
+            `p95 ${duration['p(95)'].toFixed(1)} ms / p99 ${duration['p(99)'].toFixed(1)} ms`,
+            `Unexpected responses: ${(metrics.unexpected_responses.values.rate * 100).toFixed(1)}%\n`,
+        ].join('\n'),
+    };
 }
