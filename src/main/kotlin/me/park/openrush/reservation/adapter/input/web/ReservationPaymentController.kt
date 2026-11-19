@@ -7,7 +7,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
 @RestController
-@RequestMapping("/reservations/{reservationId}/payments")
+@RequestMapping("/reservations/{reservationId}")
 class ReservationPaymentController(private val payments: ApproveReservationPaymentUseCase) {
     @PostMapping("/confirm")
     fun confirm(

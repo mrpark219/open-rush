@@ -324,7 +324,7 @@ class ApproveReservationPaymentTest {
             "{}"
         ).forEach { body ->
             mvc.perform(
-                post("/reservations/$reservationId/payments/confirm").contentType(MediaType.APPLICATION_JSON)
+                post("/reservations/$reservationId/confirm").contentType(MediaType.APPLICATION_JSON)
                     .content(body)
             )
                 .andExpect(status().isBadRequest)
@@ -343,7 +343,7 @@ class ApproveReservationPaymentTest {
     }
 
     private fun confirm(key: String = "PK-TEST", userId: Long = 1) = mvc.perform(
-        post("/reservations/$reservationId/payments/confirm").contentType(MediaType.APPLICATION_JSON)
+        post("/reservations/$reservationId/confirm").contentType(MediaType.APPLICATION_JSON)
             .content("""{"userId":$userId,"attemptNumber":"$attemptNumber","paymentKey":"$key"}"""),
     )
 

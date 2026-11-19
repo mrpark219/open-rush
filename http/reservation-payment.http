@@ -8,7 +8,7 @@
 # 유효한 선점 예약 ID를 사용합니다. 금액은 서버가 예약에서 읽습니다.
 # 같은 시도의 재요청은 attemptNumber와 paymentKey를 유지합니다.
 # 202 PENDING이면 같은 요청으로 결과를 다시 확인합니다.
-POST {{baseUrl}}/reservations/{{reservationId}}/payments/confirm
+POST {{baseUrl}}/reservations/{{reservationId}}/confirm
 Content-Type: application/json
 
 {

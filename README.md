@@ -106,7 +106,7 @@ docker compose up -d --wait
 
 ### 예약 결제 승인 API
 
-`POST /reservations/{reservationId}/payments/confirm`은 `userId`, `attemptNumber`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
+`POST /reservations/{reservationId}/confirm`은 `userId`, `attemptNumber`(UUID), `paymentKey`를 받습니다. 금액은 저장된 예약 금액을 사용합니다. 같은 예약과 결제 시도에는 같은 `paymentKey`를 사용해야 하며, 다른 키로 재요청하면 `409 PAYMENT_CONFLICT`를 반환합니다. 요청 예시는 [reservation-payment.http](http/reservation-payment.http)에 있습니다.
 
 준비 이력을 커밋한 뒤 DB 트랜잭션 밖에서 PG 주문을 조회하고, 아직 승인되지 않았고 예약이 유효하면 승인합니다. 승인 응답은 `DONE`, 주문 ID, 결제 키를 검증하며 금액과 통화 불일치는 환불 필요로 기록합니다. 결과 저장과 예약 확정은 하나의 새 트랜잭션으로 처리합니다. 완료된 동일 요청은 PG 호출 없이 저장된 결과를 반환합니다.
 
