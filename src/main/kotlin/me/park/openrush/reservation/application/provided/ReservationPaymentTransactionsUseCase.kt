@@ -7,5 +7,5 @@ interface ReservationPaymentTransactionsUseCase {
     fun findPreparation(reservationId: Long, attemptNumber: UUID): PaymentPreparation?
     fun prepare(reservationId: Long, attemptNumber: UUID, amount: Long, paymentKey: String): PaymentPreparation
     fun findApproved(provider: String, paymentId: String): ReservationPaymentApprovalResult?
-    fun record(record: ReservationPaymentApprovalResult): ReservationPaymentApprovalResult
+    fun record(paymentApprovalResult: ReservationPaymentApprovalResult): ReservationPaymentApprovalResult
 }

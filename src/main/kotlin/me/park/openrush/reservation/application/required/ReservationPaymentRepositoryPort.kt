@@ -9,5 +9,5 @@ interface ReservationPaymentRepositoryPort {
     fun findCancellationPreparation(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction?
     fun findCanceled(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction?
     fun findApproved(provider: String, paymentId: String): ReservationPaymentTransaction?
-    fun save(paymentTx: ReservationPaymentTransaction)
+    fun save(reservationPaymentTransaction: ReservationPaymentTransaction)
 }

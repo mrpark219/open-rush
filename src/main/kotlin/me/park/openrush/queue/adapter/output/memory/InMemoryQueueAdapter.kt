@@ -17,8 +17,8 @@ class InMemoryQueueAdapter(clock: Clock,
     @Value("\${queue.wait-ttl-ms:120000}") waitTtlMillis: Long,
     @Value("\${queue.permit-ttl-ms:10000}") permitTtlMillis: Long,
 ) : QueueStorePort {
-    private val queue = ReservationQueue(clock, admissionsPerSecond, maxInFlight, capacity, waitTtlMillis, permitTtlMillis)
-    override fun join(userId: Long): QueueTicketView = queue.join(userId)
-    override fun status(ticketId: UUID): QueueTicketView = queue.status(ticketId)
-    override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = queue.consume(userId, ticketHeader)
+    private val reservationQueue = ReservationQueue(clock, admissionsPerSecond, maxInFlight, capacity, waitTtlMillis, permitTtlMillis)
+    override fun join(userId: Long): QueueTicketView = reservationQueue.join(userId)
+    override fun status(ticketId: UUID): QueueTicketView = reservationQueue.status(ticketId)
+    override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = reservationQueue.consume(userId, ticketHeader)
 }

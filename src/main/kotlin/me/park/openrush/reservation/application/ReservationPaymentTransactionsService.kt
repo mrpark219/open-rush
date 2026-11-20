@@ -15,53 +15,53 @@ import java.util.*
 
 @Service
 class ReservationPaymentTransactionsService(
-    private val transactions: ReservationPaymentRepositoryPort,
+    private val reservationPaymentRepository: ReservationPaymentRepositoryPort,
 ) : ReservationPaymentTransactionsUseCase {
     @Transactional(readOnly = true)
     override fun findPreparation(reservationId: Long, attemptNumber: UUID): PaymentPreparation? =
-        transactions.findByAttempt(reservationId, attemptNumber)?.toPreparation()
+        reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)?.toPreparation()
 
     @Transactional
     override fun prepare(reservationId: Long, attemptNumber: UUID, amount: Long, paymentKey: String): PaymentPreparation {
-        val tx = ReservationPaymentTransaction.prepare(reservationId, attemptNumber, amount, paymentKey)
-        transactions.save(tx)
-        return tx.toPreparation()
+        val paymentPreparation = ReservationPaymentTransaction.prepare(reservationId, attemptNumber, amount, paymentKey)
+        reservationPaymentRepository.save(paymentPreparation)
+        return paymentPreparation.toPreparation()
     }
 
     @Transactional(readOnly = true)
     override fun findApproved(provider: String, paymentId: String): ReservationPaymentApprovalResult? =
-        transactions.findApproved(provider, paymentId)?.toApprovalResult()
+        reservationPaymentRepository.findApproved(provider, paymentId)?.toApprovalResult()
 
     @Transactional
-    override fun record(record: ReservationPaymentApprovalResult): ReservationPaymentApprovalResult {
-        val payment = record.payment
-        transactions.findApproved(payment.provider, payment.paymentId)?.toApprovalResult()?.let {
-            if (it.payment != payment) throw PaymentRecordConflictException()
+    override fun record(paymentApprovalResult: ReservationPaymentApprovalResult): ReservationPaymentApprovalResult {
+        val recordPaymentSuccessCommand = paymentApprovalResult.payment
+        reservationPaymentRepository.findApproved(recordPaymentSuccessCommand.provider, recordPaymentSuccessCommand.paymentId)?.toApprovalResult()?.let {
+            if (it.payment != recordPaymentSuccessCommand) throw PaymentRecordConflictException()
             return it
         }
-        val preparation = payment.pgOrderNumber?.let { order ->
-            transactions.findPreparedByOrder(payment.provider, order)
-                ?.takeIf { it.reservationId == payment.reservationId }
+        val paymentPreparation = recordPaymentSuccessCommand.pgOrderNumber?.let { pgOrderNumber ->
+            reservationPaymentRepository.findPreparedByOrder(recordPaymentSuccessCommand.provider, pgOrderNumber)
+                ?.takeIf { it.reservationId == recordPaymentSuccessCommand.reservationId }
                 ?: throw IllegalArgumentException("결제의 PG 주문이 예매와 일치하지 않습니다.")
         }
         try {
-            transactions.save(
+            reservationPaymentRepository.save(
                 ReservationPaymentTransaction.approved(
-                    reservationId = payment.reservationId,
-                    provider = payment.provider,
-                    paymentId = payment.paymentId,
-                    amount = payment.amount,
-                    currency = payment.currency,
-                    pgOrderNumber = payment.pgOrderNumber,
-                    status = record.status,
-                    refundReason = record.refundReason,
-                    preparation = preparation,
+                    reservationId = recordPaymentSuccessCommand.reservationId,
+                    provider = recordPaymentSuccessCommand.provider,
+                    paymentId = recordPaymentSuccessCommand.paymentId,
+                    amount = recordPaymentSuccessCommand.amount,
+                    currency = recordPaymentSuccessCommand.currency,
+                    pgOrderNumber = recordPaymentSuccessCommand.pgOrderNumber,
+                    status = paymentApprovalResult.status,
+                    refundReason = paymentApprovalResult.refundReason,
+                    preparation = paymentPreparation,
                 )
             )
         } catch (exception: DuplicateApprovedPaymentException) {
             throw PaymentRecordConflictException(exception)
         }
-        return record
+        return paymentApprovalResult
     }
 
     private fun ReservationPaymentTransaction.toApprovalResult(): ReservationPaymentApprovalResult {

@@ -13,71 +13,81 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class ApproveReservationPaymentService(
-    private val preparations: PrepareReservationPaymentTxUseCase,
-    private val transactions: ReservationPaymentTransactionsUseCase,
-    private val gateway: ApprovePaymentUseCase,
-    private val records: RecordPaymentSuccessUseCase,
-    private val refunds: RefundReservationPaymentUseCase,
+    private val prepareReservationPaymentTxUseCase: PrepareReservationPaymentTxUseCase,
+    private val reservationPaymentTransactionsUseCase: ReservationPaymentTransactionsUseCase,
+    private val approvePaymentUseCase: ApprovePaymentUseCase,
+    private val recordPaymentSuccessUseCase: RecordPaymentSuccessUseCase,
+    private val refundReservationPaymentUseCase: RefundReservationPaymentUseCase,
 ) : ApproveReservationPaymentUseCase {
     // 준비와 결과 저장만 각각 트랜잭션을 사용하며 PG 호출 중에는 잠금을 유지하지 않는다.
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    override fun approve(command: ApproveReservationPaymentCommand): ReservationPaymentResult {
-        val prepared = preparations.prepare(command)
-        val tx = prepared.transaction
-        transactions.findApproved(tx.provider, command.paymentKey)?.let {
-            if (it.payment.reservationId != command.reservationId || it.payment.pgOrderNumber != tx.pgOrderNumber) {
+    override fun approve(approveReservationPaymentCommand: ApproveReservationPaymentCommand): ReservationPaymentResult {
+        val preparedReservationPayment = prepareReservationPaymentTxUseCase.prepare(approveReservationPaymentCommand)
+        val paymentPreparation = preparedReservationPayment.transaction
+        reservationPaymentTransactionsUseCase.findApproved(
+            paymentPreparation.provider,
+            approveReservationPaymentCommand.paymentKey,
+        )?.let { existingPaymentApprovalResult ->
+            if (existingPaymentApprovalResult.payment.reservationId != approveReservationPaymentCommand.reservationId ||
+                existingPaymentApprovalResult.payment.pgOrderNumber != paymentPreparation.pgOrderNumber
+            ) {
                 throw PaymentRecordConflictException()
             }
-            return result(command, it)
+            return result(approveReservationPaymentCommand, existingPaymentApprovalResult)
         }
 
-        val approvalCommand = PaymentApprovalCommand(
-            provider = tx.provider,
-            orderNumber = tx.pgOrderNumber,
-            paymentKey = tx.requestedPaymentKey,
-            amount = tx.amount,
-            idempotencyKey = tx.approvalIdempotencyKey,
+        val paymentApprovalCommand = PaymentApprovalCommand(
+            provider = paymentPreparation.provider,
+            orderNumber = paymentPreparation.pgOrderNumber,
+            paymentKey = paymentPreparation.requestedPaymentKey,
+            amount = paymentPreparation.amount,
+            idempotencyKey = paymentPreparation.approvalIdempotencyKey,
         )
-        val payment: ApprovedPayment? = try {
-            gateway.findByOrder(approvalCommand) ?: if (prepared.approvalAllowed) {
+        val approvedPayment: ApprovedPayment? = try {
+            approvePaymentUseCase.findByOrder(paymentApprovalCommand) ?: if (preparedReservationPayment.approvalAllowed) {
                 try {
-                    gateway.confirm(approvalCommand)
+                    approvePaymentUseCase.confirm(paymentApprovalCommand)
                 } catch (_: PaymentGatewayUnavailableException) {
                     // 승인 응답 유실은 실패로 단정하지 않고 같은 주문으로 조회한다.
-                    gateway.findByOrder(approvalCommand)
+                    approvePaymentUseCase.findByOrder(paymentApprovalCommand)
                 }
             } else null
         } catch (_: PaymentGatewayUnavailableException) {
             null
         }
-        val record = payment?.let {
-            records.record(
+        val paymentApprovalResult = approvedPayment?.let {
+            recordPaymentSuccessUseCase.record(
                 RecordPaymentSuccessCommand(
                     provider = it.provider,
                     paymentId = it.paymentKey,
-                    reservationId = command.reservationId,
+                    reservationId = approveReservationPaymentCommand.reservationId,
                     amount = it.amount,
                     currency = it.currency,
                     pgOrderNumber = it.orderNumber,
                 )
             )
         }
-        return result(command, record)
+        return result(approveReservationPaymentCommand, paymentApprovalResult)
     }
 
     private fun result(
-        command: ApproveReservationPaymentCommand,
-        record: ReservationPaymentApprovalResult?,
+        approveReservationPaymentCommand: ApproveReservationPaymentCommand,
+        paymentApprovalResult: ReservationPaymentApprovalResult?,
     ): ReservationPaymentResult {
-        val refund = if (record?.status == PaymentStatus.REFUND_REQUIRED) {
-            refunds.refund(
+        val paymentRefundResult = if (paymentApprovalResult?.status == PaymentStatus.REFUND_REQUIRED) {
+            refundReservationPaymentUseCase.refund(
                 RefundReservationPaymentCommand(
-                    command.reservationId,
-                    command.userId,
-                    command.attemptNumber
+                    approveReservationPaymentCommand.reservationId,
+                    approveReservationPaymentCommand.userId,
+                    approveReservationPaymentCommand.attemptNumber
                 )
             )
         } else null
-        return ReservationPaymentResult(command.reservationId, command.attemptNumber, record, refund)
+        return ReservationPaymentResult(
+            reservationId = approveReservationPaymentCommand.reservationId,
+            attemptNumber = approveReservationPaymentCommand.attemptNumber,
+            record = paymentApprovalResult,
+            refund = paymentRefundResult,
+        )
     }
 }

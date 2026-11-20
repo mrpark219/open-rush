@@ -14,43 +14,43 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class RefundReservationPaymentService(
-    private val transactions: ReservationPaymentRefundTransactions,
-    private val gateway: CancelPaymentUseCase,
+    private val reservationPaymentRefundTransactions: ReservationPaymentRefundTransactions,
+    private val cancelPaymentUseCase: CancelPaymentUseCase,
 ) : RefundReservationPaymentUseCase {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    override fun refund(command: RefundReservationPaymentCommand): ReservationPaymentRefundResult {
-        val preparation = transactions.prepare(command)
-        val number = requireNotNull(preparation.cancellationNumber)
-        transactions.findCanceled(preparation)?.let {
-            return ReservationPaymentRefundResult(command.reservationId, number, it.cancellationId)
+    override fun refund(refundReservationPaymentCommand: RefundReservationPaymentCommand): ReservationPaymentRefundResult {
+        val cancellationPreparation = reservationPaymentRefundTransactions.prepare(refundReservationPaymentCommand)
+        val cancellationNumber = requireNotNull(cancellationPreparation.cancellationNumber)
+        reservationPaymentRefundTransactions.findCanceled(cancellationPreparation)?.let {
+            return ReservationPaymentRefundResult(refundReservationPaymentCommand.reservationId, cancellationNumber, it.cancellationId)
         }
-        val canceled = try {
-            gateway.cancel(
+        val canceledPayment = try {
+            cancelPaymentUseCase.cancel(
                 PaymentCancellationCommand(
-                    provider = preparation.provider,
-                    orderNumber = requireNotNull(preparation.pgOrderNumber),
-                    paymentKey = requireNotNull(preparation.paymentId),
-                    amount = preparation.amount,
-                    currency = requireNotNull(preparation.currency),
-                    reason = requireNotNull(preparation.cancelReason),
-                    idempotencyKey = requireNotNull(preparation.cancellationIdempotencyKey),
+                    provider = cancellationPreparation.provider,
+                    orderNumber = requireNotNull(cancellationPreparation.pgOrderNumber),
+                    paymentKey = requireNotNull(cancellationPreparation.paymentId),
+                    amount = cancellationPreparation.amount,
+                    currency = requireNotNull(cancellationPreparation.currency),
+                    reason = requireNotNull(cancellationPreparation.cancelReason),
+                    idempotencyKey = requireNotNull(cancellationPreparation.cancellationIdempotencyKey),
                 ),
             )
         } catch (exception: PaymentGatewayRejectedException) {
-            logger.warn("PG 환불 거절: reservationId={}, cancellationNumber={}", command.reservationId, number, exception)
-            return ReservationPaymentRefundResult(command.reservationId, number, null)
+            logger.warn("PG 환불 거절: reservationId={}, cancellationNumber={}", refundReservationPaymentCommand.reservationId, cancellationNumber, exception)
+            return ReservationPaymentRefundResult(refundReservationPaymentCommand.reservationId, cancellationNumber, null)
         } catch (exception: PaymentGatewayUnavailableException) {
             logger.warn(
                 "PG 환불 결과 확인 필요: reservationId={}, cancellationNumber={}",
-                command.reservationId,
-                number,
+                refundReservationPaymentCommand.reservationId,
+                cancellationNumber,
                 exception
             )
-            return ReservationPaymentRefundResult(command.reservationId, number, null)
+            return ReservationPaymentRefundResult(refundReservationPaymentCommand.reservationId, cancellationNumber, null)
         }
-        val recorded = transactions.record(preparation, canceled.cancellationId)
-        return ReservationPaymentRefundResult(command.reservationId, number, recorded.cancellationId)
+        val cancellationTransaction = reservationPaymentRefundTransactions.record(cancellationPreparation, canceledPayment.cancellationId)
+        return ReservationPaymentRefundResult(refundReservationPaymentCommand.reservationId, cancellationNumber, cancellationTransaction.cancellationId)
     }
 }

@@ -11,12 +11,12 @@ import java.util.*
 @RequestMapping("/reservation-queue")
 @ConditionalOnProperty(prefix = "queue", name = ["enabled"], havingValue = "true")
 class ReservationQueueController(
-    private val registration: JoinQueueUseCase,
-    private val tickets: GetQueueTicketUseCase
+    private val joinQueueUseCase: JoinQueueUseCase,
+    private val getQueueTicketUseCase: GetQueueTicketUseCase
 ) {
     @PostMapping
-    fun join(@RequestBody request: QueueJoinRequest): QueueTicketView = registration.join(request.userId)
+    fun join(@RequestBody request: QueueJoinRequest): QueueTicketView = joinQueueUseCase.join(request.userId)
 
     @GetMapping("/{ticketId}")
-    fun status(@PathVariable ticketId: UUID): QueueTicketView = tickets.status(ticketId)
+    fun status(@PathVariable ticketId: UUID): QueueTicketView = getQueueTicketUseCase.status(ticketId)
 }

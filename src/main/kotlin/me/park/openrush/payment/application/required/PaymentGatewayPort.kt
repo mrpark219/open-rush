@@ -6,7 +6,7 @@ import me.park.openrush.payment.application.provided.PaymentApprovalCommand
 import me.park.openrush.payment.application.provided.PaymentCancellationCommand
 
 interface PaymentGatewayPort {
-    fun cancel(command: PaymentCancellationCommand): CanceledPayment
-    fun confirm(command: PaymentApprovalCommand): ApprovedPayment
-    fun findByOrder(command: PaymentApprovalCommand): ApprovedPayment?
+    fun cancel(paymentCancellationCommand: PaymentCancellationCommand): CanceledPayment
+    fun confirm(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment
+    fun findByOrder(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment?
 }

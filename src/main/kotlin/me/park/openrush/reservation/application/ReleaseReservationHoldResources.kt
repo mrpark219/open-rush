@@ -8,18 +8,18 @@ import org.springframework.stereotype.Component
 
 @Component
 class ReleaseReservationHoldResources(
-    private val performances: GetPerformanceUseCase,
-    private val purchaseQuotas: ReleasePurchaseQuotaUseCase,
-    private val performanceSeats: ReleaseSeatsUseCase,
+    private val getPerformanceUseCase: GetPerformanceUseCase,
+    private val releasePurchaseQuotaUseCase: ReleasePurchaseQuotaUseCase,
+    private val releaseSeatsUseCase: ReleaseSeatsUseCase,
 ) {
     fun release(reservation: Reservation) {
         // 생성과 동일하게 한도 → 좌석 순서로 갱신한다.
-        purchaseQuotas.releaseQuota(
+        releasePurchaseQuotaUseCase.releaseQuota(
             reservation.userId,
-            requireNotNull(performances.findPerformance(reservation.performanceId)).concertId,
+            requireNotNull(getPerformanceUseCase.findPerformance(reservation.performanceId)).concertId,
             reservation.quantity,
         )
-        performanceSeats.releaseSeats(
+        releaseSeatsUseCase.releaseSeats(
             requireNotNull(reservation.id),
             reservation.items.map { it.seatId },
         )

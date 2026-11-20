@@ -12,19 +12,19 @@ import org.springframework.stereotype.Service
 
 @Service
 class CreateReservationFacade(
-    private val createReservationService: ReservationService,
+    private val reservationService: ReservationService,
 ) : CreateReservationUseCase {
     override fun create(
-        command: CreateReservationCommand,
+        createReservationCommand: CreateReservationCommand,
         acquireAdmission: (() -> AutoCloseable)?
     ): CreateReservationResult {
-        var permit: AutoCloseable? = null
-        val admit: (() -> Unit)? = acquireAdmission?.let { acquire ->
-            { if (permit == null) permit = acquire() }
+        var admissionPermit: AutoCloseable? = null
+        val admitReservation: (() -> Unit)? = acquireAdmission?.let { acquireAdmissionPermit ->
+            { if (admissionPermit == null) admissionPermit = acquireAdmissionPermit() }
         }
         try {
-            if (command.idempotencyKey == null) admit?.invoke()
-            return createWithQuotaCreationRetry(command, admit)
+            if (createReservationCommand.idempotencyKey == null) admitReservation?.invoke()
+            return createWithQuotaCreationRetry(createReservationCommand, admitReservation)
         } catch (exception: RuntimeException) {
             throw when (exception) {
                 is PurchaseQuotaCreationConflictException,
@@ -35,17 +35,17 @@ class CreateReservationFacade(
                 else -> exception
             }
         } finally {
-            permit?.close()
+            admissionPermit?.close()
         }
     }
 
     private fun createWithQuotaCreationRetry(
-        command: CreateReservationCommand,
-        admit: (() -> Unit)?
+        createReservationCommand: CreateReservationCommand,
+        admitReservation: (() -> Unit)?
     ): CreateReservationResult =
         try {
-            createReservationService.create(command, admit)
+            reservationService.create(createReservationCommand, admitReservation)
         } catch (_: PurchaseQuotaCreationConflictException) {
-            createReservationService.create(command, admit)
+            reservationService.create(createReservationCommand, admitReservation)
         }
 }

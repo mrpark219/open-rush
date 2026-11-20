@@ -8,13 +8,13 @@ import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/reservations/{reservationId}")
-class ReservationPaymentController(private val payments: ApproveReservationPaymentUseCase) {
+class ReservationPaymentController(private val approveReservationPaymentUseCase: ApproveReservationPaymentUseCase) {
     @PostMapping("/confirm")
     fun confirm(
         @PathVariable reservationId: Long,
         @Valid @RequestBody request: ApproveReservationPaymentRequest,
     ): ResponseEntity<ReservationPaymentResponse> {
-        val result = payments.approve(
+        val reservationPaymentResult = approveReservationPaymentUseCase.approve(
             ApproveReservationPaymentCommand(
                 reservationId,
                 request.userId,
@@ -22,7 +22,7 @@ class ReservationPaymentController(private val payments: ApproveReservationPayme
                 request.paymentKey
             )
         )
-        val response = ReservationPaymentResponse.from(result)
-        return if (result.record == null) ResponseEntity.accepted().body(response) else ResponseEntity.ok(response)
+        val reservationPaymentResponse = ReservationPaymentResponse.from(reservationPaymentResult)
+        return if (reservationPaymentResult.record == null) ResponseEntity.accepted().body(reservationPaymentResponse) else ResponseEntity.ok(reservationPaymentResponse)
     }
 }

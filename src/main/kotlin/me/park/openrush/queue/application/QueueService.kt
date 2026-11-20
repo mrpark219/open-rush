@@ -11,9 +11,9 @@ import java.util.*
 
 @Service
 @ConditionalOnProperty(prefix = "queue", name = ["enabled"], havingValue = "true")
-class QueueService(private val store: QueueStorePort) : JoinQueueUseCase, GetQueueTicketUseCase,
+class QueueService(private val queueStore: QueueStorePort) : JoinQueueUseCase, GetQueueTicketUseCase,
     ReservationAdmissionUseCase {
-    override fun join(userId: Long): QueueTicketView = store.join(userId)
-    override fun status(ticketId: UUID): QueueTicketView = store.status(ticketId)
-    override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = store.consume(userId, ticketHeader)
+    override fun join(userId: Long): QueueTicketView = queueStore.join(userId)
+    override fun status(ticketId: UUID): QueueTicketView = queueStore.status(ticketId)
+    override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = queueStore.consume(userId, ticketHeader)
 }

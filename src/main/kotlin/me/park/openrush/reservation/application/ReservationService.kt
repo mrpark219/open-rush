@@ -34,16 +34,16 @@ import java.time.Duration
 
 @Service
 class ReservationService(
-    private val loadPerformancePort: GetPerformanceUseCase,
-    private val loadPerformanceSeatsPort: GetSeatsUseCase,
-    private val allocatePurchaseQuotaPort: AllocatePurchaseQuotaUseCase,
-    private val reservations: ReservationRepositoryPort,
-    private val holdPerformanceSeatsPort: HoldSeatsUseCase,
+    private val getPerformanceUseCase: GetPerformanceUseCase,
+    private val getSeatsUseCase: GetSeatsUseCase,
+    private val allocatePurchaseQuotaUseCase: AllocatePurchaseQuotaUseCase,
+    private val reservationRepository: ReservationRepositoryPort,
+    private val holdSeatsUseCase: HoldSeatsUseCase,
     private val clock: Clock,
-    private val confirmPerformanceSeatsPort: ConfirmSeatsUseCase,
-    private val holdResources: ReleaseReservationHoldResources,
+    private val confirmSeatsUseCase: ConfirmSeatsUseCase,
+    private val releaseReservationHoldResources: ReleaseReservationHoldResources,
     private val configureExpirationTransactionPort: ConfigureExpirationTransactionPort,
-    private val paymentTransactions: ReservationPaymentTransactionsUseCase,
+    private val reservationPaymentTransactionsUseCase: ReservationPaymentTransactionsUseCase,
     @Value("\${reservation.hold-duration-ms:300000}") holdDurationMillis: Long,
 ) : GetReservationUseCase, ConfirmReservationUseCase, CancelReservationHoldUseCase,
     ExpireReservationHoldUseCase, PrepareReservationPaymentTxUseCase, RecordPaymentSuccessUseCase {
@@ -54,37 +54,37 @@ class ReservationService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun create(command: CreateReservationCommand, admit: (() -> Unit)? = null): CreateReservationResult {
-        val key = command.idempotencyKey ?: return createNew(command)
-        val request = "${command.performanceId}:${command.seatIds.sorted().joinToString(",")}"
-        reservations.findCreationRecord(command.userId, key)?.let { return replay(it, request) }
+    fun create(createReservationCommand: CreateReservationCommand, admit: (() -> Unit)? = null): CreateReservationResult {
+        val key = createReservationCommand.idempotencyKey ?: return createNew(createReservationCommand)
+        val request = "${createReservationCommand.performanceId}:${createReservationCommand.seatIds.sorted().joinToString(",")}"
+        reservationRepository.findCreationRecord(createReservationCommand.userId, key)?.let { return replay(it, request) }
 
         admit?.invoke()
-        if (!reservations.claimCreationRequest(command.userId, key, request)) {
-            return replay(checkNotNull(reservations.findCreationRecord(command.userId, key)), request)
+        if (!reservationRepository.claimCreationRequest(createReservationCommand.userId, key, request)) {
+            return replay(checkNotNull(reservationRepository.findCreationRecord(createReservationCommand.userId, key)), request)
         }
 
-        val result = createNew(command)
-        reservations.completeCreationRequest(command.userId, key, result)
+        val result = createNew(createReservationCommand)
+        reservationRepository.completeCreationRequest(createReservationCommand.userId, key, result)
         return result
     }
 
-    private fun replay(record: ReservationCreationRecord, request: String): CreateReservationResult {
-        if (record.request != request) throw ReservationIdempotencyConflictException()
-        return record.result
+    private fun replay(reservationCreationRecord: ReservationCreationRecord, request: String): CreateReservationResult {
+        if (reservationCreationRecord.request != request) throw ReservationIdempotencyConflictException()
+        return reservationCreationRecord.result
     }
 
-    private fun createNew(command: CreateReservationCommand): CreateReservationResult = try {
-        createReservation(command)
+    private fun createNew(createReservationCommand: CreateReservationCommand): CreateReservationResult = try {
+        createReservation(createReservationCommand)
     } catch (exception: InventoryRuleViolationException) {
         throw ReservationRuleViolationException(requireNotNull(exception.message))
     } catch (exception: QuotaRuleViolationException) {
         throw ReservationRuleViolationException(requireNotNull(exception.message))
     }
 
-    private fun createReservation(command: CreateReservationCommand): CreateReservationResult {
-        val performance = loadPerformance(command.performanceId)
-        val selectedSeats = loadRequestedSeats(command)
+    private fun createReservation(createReservationCommand: CreateReservationCommand): CreateReservationResult {
+        val performance = loadPerformance(createReservationCommand.performanceId)
+        val selectedSeats = loadRequestedSeats(createReservationCommand)
 
         val reservation = Reservation.create(
             bookingPolicy = ReservationBookingPolicy(
@@ -93,7 +93,7 @@ class ReservationService(
                 performance.bookingClosesAt,
                 performance.maxTicketsPerUser
             ),
-            userId = command.userId,
+            userId = createReservationCommand.userId,
             seats = selectedSeats.map {
                 ReservationSeat(
                     it.seatId,
@@ -106,7 +106,7 @@ class ReservationService(
             holdDuration = holdDuration,
         )
 
-        allocatePurchaseQuotaPort.allocate(
+        allocatePurchaseQuotaUseCase.allocate(
             AllocateQuotaCommand(
                 reservation.userId,
                 performance.concertId,
@@ -114,8 +114,8 @@ class ReservationService(
             )
         )
 
-        val savedReservation = reservations.save(reservation)
-        val heldSeats = holdPerformanceSeatsPort.hold(
+        val savedReservation = reservationRepository.save(reservation)
+        val heldSeats = holdSeatsUseCase.hold(
             HoldSeatsCommand(
                 requireNotNull(savedReservation.id),
                 savedReservation.performanceId,
@@ -126,13 +126,13 @@ class ReservationService(
     }
 
     private fun loadPerformance(performanceId: Long): PerformanceDetails =
-        loadPerformancePort.findPerformance(performanceId)
+        getPerformanceUseCase.findPerformance(performanceId)
             ?: throw ReservationRuleViolationException("회차가 존재하지 않습니다.")
 
-    private fun loadRequestedSeats(command: CreateReservationCommand): List<SeatDetails> {
-        val seats = loadPerformanceSeatsPort.findSeats(command.performanceId, command.seatIds)
+    private fun loadRequestedSeats(createReservationCommand: CreateReservationCommand): List<SeatDetails> {
+        val seats = getSeatsUseCase.findSeats(createReservationCommand.performanceId, createReservationCommand.seatIds)
 
-        if (seats.size != command.seatIds.size) {
+        if (seats.size != createReservationCommand.seatIds.size) {
             throw ReservationRuleViolationException("요청한 좌석이 해당 회차에 존재하지 않습니다.")
         }
 
@@ -142,7 +142,7 @@ class ReservationService(
     @Transactional(readOnly = true)
     override fun find(reservationId: Long, userId: Long): ReservationDetails? {
         require(reservationId > 0 && userId > 0) { "예매 ID와 사용자 ID는 양수여야 합니다." }
-        val reservation = reservations.findReservation(reservationId)
+        val reservation = reservationRepository.findReservation(reservationId)
             ?.takeIf { it.userId == userId } ?: return null
 
         return ReservationDetails(
@@ -159,83 +159,83 @@ class ReservationService(
     }
 
     @Transactional(noRollbackFor = [ReservationRuleViolationException::class])
-    override fun confirm(command: ConfirmReservationCommand) {
-        val reservation = reservations.findReservation(command.reservationId)
+    override fun confirm(confirmReservationCommand: ConfirmReservationCommand) {
+        val reservation = reservationRepository.findReservation(confirmReservationCommand.reservationId)
             ?: throw ReservationRuleViolationException("예매가 존재하지 않습니다.")
         val now = clock.reservationTimestamp()
-        reservation.validateConfirmation(command.userId, now)
+        reservation.validateConfirmation(confirmReservationCommand.userId, now)
 
-        reservations.confirmHeld(command.reservationId, command.userId, now)
-        confirmPerformanceSeatsPort.confirmSeats(
-            command.reservationId,
+        reservationRepository.confirmHeld(confirmReservationCommand.reservationId, confirmReservationCommand.userId, now)
+        confirmSeatsUseCase.confirmSeats(
+            confirmReservationCommand.reservationId,
             reservation.items.map { it.seatId },
             now,
         )
     }
 
     @Transactional
-    override fun cancelHold(command: CancelReservationHoldCommand) {
-        val reservation = reservations.findReservation(command.reservationId)
+    override fun cancelHold(cancelReservationHoldCommand: CancelReservationHoldCommand) {
+        val reservation = reservationRepository.findReservation(cancelReservationHoldCommand.reservationId)
             ?: throw ReservationRuleViolationException("예매가 존재하지 않습니다.")
         val now = clock.reservationTimestamp()
-        reservation.validateHoldCancellation(command.userId, now)
+        reservation.validateHoldCancellation(cancelReservationHoldCommand.userId, now)
 
         // 상태 전환에 성공한 요청만 자원을 반환한다.
-        reservations.cancelHeld(command.reservationId, command.userId, now)
-        holdResources.release(reservation)
+        reservationRepository.cancelHeld(cancelReservationHoldCommand.reservationId, cancelReservationHoldCommand.userId, now)
+        releaseReservationHoldResources.release(reservation)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun expireHold(reservationId: Long): Boolean {
         require(reservationId > 0) { "예매 ID는 양수여야 합니다." }
         configureExpirationTransactionPort.configure()
-        if (!reservations.expireHeld(reservationId, clock.reservationTimestamp())) return false
-        val reservation = checkNotNull(reservations.findReservation(reservationId)) {
+        if (!reservationRepository.expireHeld(reservationId, clock.reservationTimestamp())) return false
+        val reservation = checkNotNull(reservationRepository.findReservation(reservationId)) {
             "만료 전환한 예매를 찾을 수 없습니다."
         }
         // 반환 실패 시 EXPIRED 전환도 함께 롤백한다.
-        holdResources.release(reservation)
+        releaseReservationHoldResources.release(reservation)
         return true
     }
 
     @Transactional
-    override fun prepare(command: ApproveReservationPaymentCommand): PreparedReservationPayment {
-        val reservation = reservations.lockOwnedReservation(command.reservationId, command.userId)
+    override fun prepare(approveReservationPaymentCommand: ApproveReservationPaymentCommand): PreparedReservationPayment {
+        val reservation = reservationRepository.lockOwnedReservation(approveReservationPaymentCommand.reservationId, approveReservationPaymentCommand.userId)
             ?: throw ReservationRuleViolationException("결제할 수 있는 예매가 없습니다.")
         val now = clock.reservationTimestamp()
-        val allowed =
+        val approvalAllowed =
             reservation.status == ReservationStatus.HELD && now >= reservation.heldAt && now < reservation.expiresAt
-        paymentTransactions.findPreparation(command.reservationId, command.attemptNumber)?.let {
-            if (it.requestedPaymentKey != command.paymentKey) throw PaymentAttemptConflictException()
-            return PreparedReservationPayment(it, allowed)
+        reservationPaymentTransactionsUseCase.findPreparation(approveReservationPaymentCommand.reservationId, approveReservationPaymentCommand.attemptNumber)?.let {
+            if (it.requestedPaymentKey != approveReservationPaymentCommand.paymentKey) throw PaymentAttemptConflictException()
+            return PreparedReservationPayment(it, approvalAllowed)
         }
-        if (!allowed) throw ReservationRuleViolationException("유효한 선점 예매만 결제할 수 있습니다.")
+        if (!approvalAllowed) throw ReservationRuleViolationException("유효한 선점 예매만 결제할 수 있습니다.")
         val amount = reservation.totalAmount
         if (amount <= 0) throw ReservationRuleViolationException("결제 금액은 양수여야 합니다.")
-        val tx = paymentTransactions.prepare(command.reservationId, command.attemptNumber, amount, command.paymentKey)
-        return PreparedReservationPayment(tx, true)
+        val paymentPreparation = reservationPaymentTransactionsUseCase.prepare(approveReservationPaymentCommand.reservationId, approveReservationPaymentCommand.attemptNumber, amount, approveReservationPaymentCommand.paymentKey)
+        return PreparedReservationPayment(paymentPreparation, true)
     }
 
     @Transactional
-    override fun record(payment: RecordPaymentSuccessCommand): ReservationPaymentApprovalResult {
-        val reservation = requireNotNull(reservations.lockReservation(payment.reservationId)) {
+    override fun record(recordPaymentSuccessCommand: RecordPaymentSuccessCommand): ReservationPaymentApprovalResult {
+        val reservation = requireNotNull(reservationRepository.lockReservation(recordPaymentSuccessCommand.reservationId)) {
             "결제에 연결된 예매가 존재하지 않습니다."
         }
-        paymentTransactions.findApproved(payment.provider, payment.paymentId)?.let { existing ->
-            if (existing.payment != payment) throw PaymentRecordConflictException()
+        reservationPaymentTransactionsUseCase.findApproved(recordPaymentSuccessCommand.provider, recordPaymentSuccessCommand.paymentId)?.let { existing ->
+            if (existing.payment != recordPaymentSuccessCommand) throw PaymentRecordConflictException()
             return existing
         }
 
-        val record = if (payment.currency != "KRW" || payment.amount != reservation.totalAmount) {
-            ReservationPaymentApprovalResult(payment, PaymentStatus.REFUND_REQUIRED, RefundReason.PAYMENT_MISMATCH)
+        val paymentApprovalResult = if (recordPaymentSuccessCommand.currency != "KRW" || recordPaymentSuccessCommand.amount != reservation.totalAmount) {
+            ReservationPaymentApprovalResult(recordPaymentSuccessCommand, PaymentStatus.REFUND_REQUIRED, RefundReason.PAYMENT_MISMATCH)
         } else {
             try {
-                confirm(ConfirmReservationCommand(reservation.userId, payment.reservationId))
-                ReservationPaymentApprovalResult(payment, PaymentStatus.RESERVATION_CONFIRMED)
+                confirm(ConfirmReservationCommand(reservation.userId, recordPaymentSuccessCommand.reservationId))
+                ReservationPaymentApprovalResult(recordPaymentSuccessCommand, PaymentStatus.RESERVATION_CONFIRMED)
             } catch (_: ReservationRuleViolationException) {
-                ReservationPaymentApprovalResult(payment, PaymentStatus.REFUND_REQUIRED, RefundReason.RESERVATION_UNAVAILABLE)
+                ReservationPaymentApprovalResult(recordPaymentSuccessCommand, PaymentStatus.REFUND_REQUIRED, RefundReason.RESERVATION_UNAVAILABLE)
             }
         }
-        return paymentTransactions.record(record)
+        return reservationPaymentTransactionsUseCase.record(paymentApprovalResult)
     }
 }

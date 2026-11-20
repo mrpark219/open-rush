@@ -10,26 +10,26 @@ import java.util.*
 
 @Repository
 class ReservationPaymentPersistenceAdapter(
-    private val payments: ReservationPaymentRepository,
+    private val reservationPaymentRepository: ReservationPaymentRepository,
 ) : ReservationPaymentRepositoryPort {
     override fun findByAttempt(reservationId: Long, attemptNumber: UUID): ReservationPaymentTransaction? =
-        payments.findByAttempt(reservationId, attemptNumber)
+        reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)
 
     override fun findPreparedByOrder(provider: String, pgOrderNumber: String): ReservationPaymentTransaction? =
-        payments.findPreparedByOrder(provider, pgOrderNumber)
+        reservationPaymentRepository.findPreparedByOrder(provider, pgOrderNumber)
 
     override fun findCancellationPreparation(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction? =
-        payments.findCancellationPreparation(reservationId, cancellationNumber)
+        reservationPaymentRepository.findCancellationPreparation(reservationId, cancellationNumber)
 
     override fun findCanceled(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction? =
-        payments.findCanceled(reservationId, cancellationNumber)
+        reservationPaymentRepository.findCanceled(reservationId, cancellationNumber)
 
     override fun findApproved(provider: String, paymentId: String): ReservationPaymentTransaction? =
-        payments.findApproved(provider, paymentId)
+        reservationPaymentRepository.findApproved(provider, paymentId)
 
-    override fun save(paymentTx: ReservationPaymentTransaction) {
+    override fun save(reservationPaymentTransaction: ReservationPaymentTransaction) {
         try {
-            payments.save(paymentTx)
+            reservationPaymentRepository.save(reservationPaymentTransaction)
         } catch (exception: RuntimeException) {
             // 서로 다른 예매의 락은 같은 PG 결제 ID의 경합을 직렬화하지 않는다.
             val duplicateApproval = generateSequence<Throwable>(exception) { it.cause }

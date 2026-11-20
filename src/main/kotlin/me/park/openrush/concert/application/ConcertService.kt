@@ -10,9 +10,9 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 @Transactional(readOnly = true)
-class ConcertService(private val concerts: ConcertRepositoryPort) : GetPerformanceUseCase, GetConcertUseCase {
+class ConcertService(private val concertRepository: ConcertRepositoryPort) : GetPerformanceUseCase, GetConcertUseCase {
     override fun findPerformance(performanceId: Long): PerformanceDetails? =
-        concerts.findPerformance(performanceId)?.let {
+        concertRepository.findPerformance(performanceId)?.let {
             PerformanceDetails(
                 requireNotNull(it.id),
                 requireNotNull(it.concert.id),
@@ -22,7 +22,7 @@ class ConcertService(private val concerts: ConcertRepositoryPort) : GetPerforman
             )
         }
 
-    override fun findConcert(concertId: Long): ConcertDetails? = concerts.findConcert(concertId)?.let {
+    override fun findConcert(concertId: Long): ConcertDetails? = concertRepository.findConcert(concertId)?.let {
         ConcertDetails(requireNotNull(it.id), it.maxTicketsPerUser)
     }
 }

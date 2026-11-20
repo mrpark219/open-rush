@@ -7,7 +7,7 @@ import me.park.openrush.reservation.domain.exception.ReservationRuleViolationExc
 interface CreateReservationUseCase {
     @Throws(ReservationRuleViolationException::class, ConcurrencyException::class)
     fun create(
-        command: CreateReservationCommand,
+        createReservationCommand: CreateReservationCommand,
         acquireAdmission: (() -> AutoCloseable)? = null
     ): CreateReservationResult
 }

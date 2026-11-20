@@ -402,12 +402,12 @@ class ExpireReservationHoldTest {
     private inline fun <reified T : Any> unused(): T = org.mockito.Mockito.mock(T::class.java)
 
     private fun cancellationService(clock: Clock, cancellation: ReservationRepositoryPort) = ReservationService(
-        loadPerformancePort = unused(), loadPerformanceSeatsPort = unused(), allocatePurchaseQuotaPort = unused(),
-        holdPerformanceSeatsPort = unused(),
+        getPerformanceUseCase = unused(), getSeatsUseCase = unused(), allocatePurchaseQuotaUseCase = unused(),
+        holdSeatsUseCase = unused(),
         clock = clock,
-        confirmPerformanceSeatsPort = unused(), holdResources = holdResources,
+        confirmSeatsUseCase = unused(), releaseReservationHoldResources = holdResources,
         configureExpirationTransactionPort = unused(),
-        reservations = cancellation, paymentTransactions = unused(), holdDurationMillis = 300000,
+        reservationRepository = cancellation, reservationPaymentTransactionsUseCase = unused(), holdDurationMillis = 300000,
     )
 
     @TestConfiguration(proxyBeanMethods = false)

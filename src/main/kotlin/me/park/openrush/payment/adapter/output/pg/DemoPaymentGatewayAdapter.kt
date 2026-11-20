@@ -11,14 +11,14 @@ import me.park.openrush.payment.application.required.PaymentGatewayPort
 import org.springframework.stereotype.Component
 
 @Component
-class DemoPaymentGatewayAdapter(private val client: DemoPgClient) : PaymentGatewayPort {
-    override fun cancel(command: PaymentCancellationCommand): CanceledPayment {
-        require(command.provider == "demo-pg" && command.amount > 0)
-        val response = try {
-            client.cancel(
-                command.paymentKey,
-                command.idempotencyKey,
-                DemoPgCancelRequest(cancelReason = command.reason, cancelAmount = command.amount),
+class DemoPaymentGatewayAdapter(private val demoPgClient: DemoPgClient) : PaymentGatewayPort {
+    override fun cancel(paymentCancellationCommand: PaymentCancellationCommand): CanceledPayment {
+        require(paymentCancellationCommand.provider == "demo-pg" && paymentCancellationCommand.amount > 0)
+        val paymentResponse = try {
+            demoPgClient.cancel(
+                paymentCancellationCommand.paymentKey,
+                paymentCancellationCommand.idempotencyKey,
+                DemoPgCancelRequest(cancelReason = paymentCancellationCommand.reason, cancelAmount = paymentCancellationCommand.amount),
             )
         } catch (exception: FeignException) {
             if (exception.status() in 400..499 && exception.status() !in setOf(408, 409, 429)) {
@@ -27,25 +27,25 @@ class DemoPaymentGatewayAdapter(private val client: DemoPgClient) : PaymentGatew
             throw PaymentGatewayUnavailableException(exception)
         }
         // 전액 환불만 지원한다. 불분명한 응답을 완료로 기록하지 않는다.
-        val cancellation = response.cancels.singleOrNull()
-        if (response.paymentKey != command.paymentKey || response.orderId != command.orderNumber ||
-            response.currency != command.currency || response.totalAmount != command.amount ||
-            response.balanceAmount != 0L || response.status != "CANCELED" || cancellation == null ||
-            cancellation.cancelAmount != command.amount || cancellation.cancelReason != command.reason ||
-            cancellation.cancelStatus != "DONE" || cancellation.transactionKey.isBlank() ||
-            cancellation.transactionKey.length > 255
+        val paymentCancellation = paymentResponse.cancels.singleOrNull()
+        if (paymentResponse.paymentKey != paymentCancellationCommand.paymentKey || paymentResponse.orderId != paymentCancellationCommand.orderNumber ||
+            paymentResponse.currency != paymentCancellationCommand.currency || paymentResponse.totalAmount != paymentCancellationCommand.amount ||
+            paymentResponse.balanceAmount != 0L || paymentResponse.status != "CANCELED" || paymentCancellation == null ||
+            paymentCancellation.cancelAmount != paymentCancellationCommand.amount || paymentCancellation.cancelReason != paymentCancellationCommand.reason ||
+            paymentCancellation.cancelStatus != "DONE" || paymentCancellation.transactionKey.isBlank() ||
+            paymentCancellation.transactionKey.length > 255
         ) throw PaymentGatewayUnavailableException()
-        return CanceledPayment(cancellation.transactionKey)
+        return CanceledPayment(paymentCancellation.transactionKey)
     }
 
-    override fun confirm(command: PaymentApprovalCommand): ApprovedPayment {
-        val response = try {
-            client.confirm(
-                command.idempotencyKey,
+    override fun confirm(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment {
+        val paymentResponse = try {
+            demoPgClient.confirm(
+                paymentApprovalCommand.idempotencyKey,
                 DemoPgConfirmRequest(
-                    paymentKey = command.paymentKey,
-                    orderId = command.orderNumber,
-                    amount = command.amount,
+                    paymentKey = paymentApprovalCommand.paymentKey,
+                    orderId = paymentApprovalCommand.orderNumber,
+                    amount = paymentApprovalCommand.amount,
                 ),
             )
         } catch (exception: FeignException) {
@@ -54,33 +54,33 @@ class DemoPaymentGatewayAdapter(private val client: DemoPgClient) : PaymentGatew
             }
             throw PaymentGatewayUnavailableException(exception)
         }
-        return verify(response, command)
+        return verify(paymentResponse, paymentApprovalCommand)
     }
 
-    override fun findByOrder(command: PaymentApprovalCommand): ApprovedPayment? {
-        val response = try {
-            client.findByOrder(command.orderNumber)
+    override fun findByOrder(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment? {
+        val paymentResponse = try {
+            demoPgClient.findByOrder(paymentApprovalCommand.orderNumber)
         } catch (_: FeignException.NotFound) {
             return null
         } catch (exception: FeignException) {
             throw PaymentGatewayUnavailableException(exception)
         }
-        return verify(response, command)
+        return verify(paymentResponse, paymentApprovalCommand)
     }
 
-    private fun verify(response: DemoPgPaymentResponse, command: PaymentApprovalCommand): ApprovedPayment {
-        if (response.status != "DONE" || response.orderId != command.orderNumber ||
-            response.paymentKey != command.paymentKey
+    private fun verify(paymentResponse: DemoPgPaymentResponse, paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment {
+        if (paymentResponse.status != "DONE" || paymentResponse.orderId != paymentApprovalCommand.orderNumber ||
+            paymentResponse.paymentKey != paymentApprovalCommand.paymentKey
         ) throw PaymentGatewayUnavailableException()
 
         return try {
             // 금액과 통화 불일치는 승인 사실을 보존한 뒤 호출자가 처리한다.
             ApprovedPayment(
-                provider = command.provider,
-                paymentKey = response.paymentKey,
-                amount = response.totalAmount,
-                currency = response.currency,
-                orderNumber = response.orderId,
+                provider = paymentApprovalCommand.provider,
+                paymentKey = paymentResponse.paymentKey,
+                amount = paymentResponse.totalAmount,
+                currency = paymentResponse.currency,
+                orderNumber = paymentResponse.orderId,
             )
         } catch (exception: IllegalArgumentException) {
             throw PaymentGatewayUnavailableException(exception)

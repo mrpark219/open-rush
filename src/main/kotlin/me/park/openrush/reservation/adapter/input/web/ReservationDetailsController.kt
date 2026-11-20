@@ -9,11 +9,11 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-class ReservationDetailsController(private val reservations: GetReservationUseCase) {
+class ReservationDetailsController(private val getReservationUseCase: GetReservationUseCase) {
     @GetMapping("/reservations/{reservationId}")
     fun get(
         @PathVariable reservationId: Long,
         @RequestParam userId: Long,
     ): ResponseEntity<ReservationDetails> =
-        ResponseEntity.ofNullable(reservations.find(reservationId, userId))
+        ResponseEntity.ofNullable(getReservationUseCase.find(reservationId, userId))
 }

@@ -9,7 +9,7 @@ import org.springframework.transaction.annotation.Transactional
 
 @Component
 class ExpirationTransactionPersistenceAdapter(
-    private val reservations: ReservationRepository,
+    private val reservationRepository: ReservationRepository,
     @param:Value("\${reservation.expiration.lock-timeout-ms:1000}") private val lockTimeoutMillis: Int,
 ) : ConfigureExpirationTransactionPort {
     init {
@@ -18,6 +18,6 @@ class ExpirationTransactionPersistenceAdapter(
 
     @Transactional(propagation = Propagation.MANDATORY)
     override fun configure() {
-        reservations.configureLockTimeout(lockTimeoutMillis)
+        reservationRepository.configureLockTimeout(lockTimeoutMillis)
     }
 }

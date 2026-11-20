@@ -8,10 +8,10 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
-class PaymentService(private val gateway: PaymentGatewayPort) : ApprovePaymentUseCase, CancelPaymentUseCase {
-    override fun cancel(command: PaymentCancellationCommand): CanceledPayment = gateway.cancel(command)
+class PaymentService(private val paymentGateway: PaymentGatewayPort) : ApprovePaymentUseCase, CancelPaymentUseCase {
+    override fun cancel(paymentCancellationCommand: PaymentCancellationCommand): CanceledPayment = paymentGateway.cancel(paymentCancellationCommand)
 
-    override fun confirm(command: PaymentApprovalCommand): ApprovedPayment = gateway.confirm(command)
+    override fun confirm(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment = paymentGateway.confirm(paymentApprovalCommand)
 
-    override fun findByOrder(command: PaymentApprovalCommand): ApprovedPayment? = gateway.findByOrder(command)
+    override fun findByOrder(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment? = paymentGateway.findByOrder(paymentApprovalCommand)
 }

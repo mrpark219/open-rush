@@ -13,16 +13,16 @@ import java.net.URI
 @RestController
 @RequestMapping("/reservations")
 class ReservationController(
-    private val reservations: CreateReservationUseCase,
-    private val holdCancellations: CancelReservationHoldUseCase,
-    private val queue: ReservationAdmissionUseCase? = null,
+    private val createReservationUseCase: CreateReservationUseCase,
+    private val cancelReservationHoldUseCase: CancelReservationHoldUseCase,
+    private val reservationAdmissionUseCase: ReservationAdmissionUseCase? = null,
 ) {
     @PostMapping("/{reservationId}/cancel-hold")
     fun cancelHold(
         @PathVariable reservationId: Long,
         @Valid @RequestBody request: CancelReservationHoldRequest,
     ): ResponseEntity<Void> {
-        holdCancellations.cancelHold(CancelReservationHoldCommand(request.userId, reservationId))
+        cancelReservationHoldUseCase.cancelHold(CancelReservationHoldCommand(request.userId, reservationId))
         return ResponseEntity.noContent().build()
     }
 
@@ -32,17 +32,17 @@ class ReservationController(
         @RequestHeader(name = "X-Queue-Ticket", required = false) queueTicket: String? = null,
         @RequestHeader(name = "Idempotency-Key", required = false) idempotencyKey: String? = null,
     ): ResponseEntity<CreateReservationResponse> {
-        val command = CreateReservationCommand(
+        val createReservationCommand = CreateReservationCommand(
             userId = request.userId,
             performanceId = request.performanceId,
             seatIds = request.seatIds,
             idempotencyKey = idempotencyKey,
         )
-        val result = reservations.create(command, queue?.let { { it.consume(command.userId, queueTicket) } })
+        val createReservationResult = createReservationUseCase.create(createReservationCommand, reservationAdmissionUseCase?.let { { it.consume(createReservationCommand.userId, queueTicket) } })
 
-        val response = CreateReservationResponse.from(result)
-        val location = URI.create("/reservations/${response.reservationId}")
+        val createReservationResponse = CreateReservationResponse.from(createReservationResult)
+        val location = URI.create("/reservations/${createReservationResponse.reservationId}")
 
-        return ResponseEntity.created(location).body(response)
+        return ResponseEntity.created(location).body(createReservationResponse)
     }
 }

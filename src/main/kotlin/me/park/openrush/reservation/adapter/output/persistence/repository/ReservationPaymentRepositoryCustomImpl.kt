@@ -8,8 +8,8 @@ import org.springframework.stereotype.Repository
 import java.util.UUID
 
 @Repository
-class ReservationPaymentRepositoryCustomImpl(private val queryFactory: JPAQueryFactory) : ReservationPaymentRepositoryCustom {
-    override fun findByAttempt(reservationId: Long, attemptNumber: UUID): ReservationPaymentTransaction? = queryFactory
+class ReservationPaymentRepositoryCustomImpl(private val jpaQueryFactory: JPAQueryFactory) : ReservationPaymentRepositoryCustom {
+    override fun findByAttempt(reservationId: Long, attemptNumber: UUID): ReservationPaymentTransaction? = jpaQueryFactory
         .selectFrom(reservationPaymentTransaction)
         .where(
             reservationPaymentTransaction.type.eq(ReservationPaymentTransactionType.APPROVAL_PREPARED),
@@ -18,7 +18,7 @@ class ReservationPaymentRepositoryCustomImpl(private val queryFactory: JPAQueryF
         )
         .fetchOne()
 
-    override fun findPreparedByOrder(provider: String, pgOrderNumber: String): ReservationPaymentTransaction? = queryFactory
+    override fun findPreparedByOrder(provider: String, pgOrderNumber: String): ReservationPaymentTransaction? = jpaQueryFactory
         .selectFrom(reservationPaymentTransaction)
         .where(
             reservationPaymentTransaction.type.eq(ReservationPaymentTransactionType.APPROVAL_PREPARED),
@@ -28,7 +28,7 @@ class ReservationPaymentRepositoryCustomImpl(private val queryFactory: JPAQueryF
         .fetchOne()
 
     override fun findCancellationPreparation(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction? =
-        queryFactory.selectFrom(reservationPaymentTransaction)
+        jpaQueryFactory.selectFrom(reservationPaymentTransaction)
             .where(
                 reservationPaymentTransaction.reservationId.eq(reservationId),
                 reservationPaymentTransaction.cancellationNumber.eq(cancellationNumber),
@@ -37,7 +37,7 @@ class ReservationPaymentRepositoryCustomImpl(private val queryFactory: JPAQueryF
             .fetchOne()
 
     override fun findCanceled(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction? =
-        queryFactory.selectFrom(reservationPaymentTransaction)
+        jpaQueryFactory.selectFrom(reservationPaymentTransaction)
             .where(
                 reservationPaymentTransaction.reservationId.eq(reservationId),
                 reservationPaymentTransaction.cancellationNumber.eq(cancellationNumber),
@@ -45,7 +45,7 @@ class ReservationPaymentRepositoryCustomImpl(private val queryFactory: JPAQueryF
             )
             .fetchOne()
 
-    override fun findApproved(provider: String, paymentId: String): ReservationPaymentTransaction? = queryFactory
+    override fun findApproved(provider: String, paymentId: String): ReservationPaymentTransaction? = jpaQueryFactory
         .selectFrom(reservationPaymentTransaction)
         .where(
             reservationPaymentTransaction.type.eq(ReservationPaymentTransactionType.APPROVED),

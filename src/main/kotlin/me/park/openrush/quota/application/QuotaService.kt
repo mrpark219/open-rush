@@ -13,29 +13,29 @@ import java.time.Clock
 
 @Service
 class QuotaService(
-    private val quotas: PurchaseQuotaRepositoryPort,
-    private val concerts: GetConcertUseCase,
+    private val purchaseQuotaRepository: PurchaseQuotaRepositoryPort,
+    private val getConcertUseCase: GetConcertUseCase,
     private val clock: Clock
 ) : AllocatePurchaseQuotaUseCase, ReleasePurchaseQuotaUseCase {
     @Transactional
-    override fun allocate(command: AllocateQuotaCommand): AllocateQuotaResult {
-        val maxTickets =
-            concerts.findConcert(command.concertId)?.maxTicketsPerUser ?: throw QuotaRuleViolationException("공연이 존재하지 않습니다.")
-        val id = quotas.findQuotaId(command.userId, command.concertId) ?: quotas.createQuota(
-            command.userId,
-            command.concertId
+    override fun allocate(allocateQuotaCommand: AllocateQuotaCommand): AllocateQuotaResult {
+        val maxTicketsPerUser =
+            getConcertUseCase.findConcert(allocateQuotaCommand.concertId)?.maxTicketsPerUser ?: throw QuotaRuleViolationException("공연이 존재하지 않습니다.")
+        val purchaseQuotaId = purchaseQuotaRepository.findQuotaId(allocateQuotaCommand.userId, allocateQuotaCommand.concertId) ?: purchaseQuotaRepository.createQuota(
+            allocateQuotaCommand.userId,
+            allocateQuotaCommand.concertId
         )
-        if (quotas.increaseIfWithinLimit(id, command.quantity, maxTickets, clock.instant()) != 1L) {
-            throw QuotaRuleViolationException("콘서트별 1인 ${maxTickets}매 한도를 초과했습니다.")
+        if (purchaseQuotaRepository.increaseIfWithinLimit(purchaseQuotaId, allocateQuotaCommand.quantity, maxTicketsPerUser, clock.instant()) != 1L) {
+            throw QuotaRuleViolationException("콘서트별 1인 ${maxTicketsPerUser}매 한도를 초과했습니다.")
         }
-        return AllocateQuotaResult(command.quantity)
+        return AllocateQuotaResult(allocateQuotaCommand.quantity)
     }
 
     @Transactional
     override fun releaseQuota(userId: Long, concertId: Long, quantity: Int) {
         require(userId > 0 && concertId > 0 && quantity > 0)
         check(
-            quotas.decreaseIfAllocated(
+            purchaseQuotaRepository.decreaseIfAllocated(
                 userId,
                 concertId,
                 quantity,

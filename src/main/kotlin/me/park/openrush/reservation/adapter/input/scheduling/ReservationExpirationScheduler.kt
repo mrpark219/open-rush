@@ -12,12 +12,12 @@ import org.springframework.stereotype.Component
     havingValue = "true",
     matchIfMissing = true
 )
-class ReservationExpirationScheduler(private val expiration: ExpireReservationHoldsUseCase) {
+class ReservationExpirationScheduler(private val expireReservationHoldsUseCase: ExpireReservationHoldsUseCase) {
     @Scheduled(
         fixedDelayString = "\${reservation.expiration.fixed-delay:10s}",
         initialDelayString = "\${reservation.expiration.initial-delay:10s}"
     )
     fun expireHolds() {
-        expiration.expireHolds()
+        expireReservationHoldsUseCase.expireHolds()
     }
 }

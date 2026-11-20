@@ -11,7 +11,7 @@ import java.time.Clock
 
 @Service
 class ExpireReservationHoldsService(
-    private val reservations: ReservationRepositoryPort,
+    private val reservationRepository: ReservationRepositoryPort,
     private val expireReservationHoldUseCase: ExpireReservationHoldUseCase,
     private val clock: Clock,
     @param:Value("\${reservation.expiration.batch-size:100}") private val batchSize: Int,
@@ -23,25 +23,25 @@ class ExpireReservationHoldsService(
     }
 
     override fun expireHolds(): ExpireReservationHoldsResult {
-        val cutoff = clock.reservationTimestamp()
+        val expirationCutoff = clock.reservationTimestamp()
         var afterId = 0L
-        var expired = 0
-        var skipped = 0
-        var failed = 0
+        var expiredReservationCount = 0
+        var skippedReservationCount = 0
+        var failedReservationCount = 0
         while (true) {
-            val ids = reservations.findExpiredReservationIds(cutoff, afterId, batchSize)
-            if (ids.isEmpty()) break
-            ids.forEach { id ->
+            val reservationIds = reservationRepository.findExpiredReservationIds(expirationCutoff, afterId, batchSize)
+            if (reservationIds.isEmpty()) break
+            reservationIds.forEach { reservationId ->
                 try {
-                    if (expireReservationHoldUseCase.expireHold(id)) expired++ else skipped++
+                    if (expireReservationHoldUseCase.expireHold(reservationId)) expiredReservationCount++ else skippedReservationCount++
                 } catch (exception: RuntimeException) {
-                    failed++
-                    logger.error("예매 만료 실패: reservationId={}. 다음 실행에서 재처리합니다.", id, exception)
+                    failedReservationCount++
+                    logger.error("예매 만료 실패: reservationId={}. 다음 실행에서 재처리합니다.", reservationId, exception)
                 }
             }
             // 실패한 행도 지나가므로 뒤의 예매를 막지 않는다. 다음 실행에서는 처음부터 재조회한다.
-            afterId = ids.last()
+            afterId = reservationIds.last()
         }
-        return ExpireReservationHoldsResult(expired, skipped, failed)
+        return ExpireReservationHoldsResult(expiredReservationCount, skippedReservationCount, failedReservationCount)
     }
 }

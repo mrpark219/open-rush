@@ -8,9 +8,9 @@ import org.springframework.stereotype.Repository
 
 @Repository
 class PerformanceRepositoryCustomImpl(
-    private val queryFactory: JPAQueryFactory,
+    private val jpaQueryFactory: JPAQueryFactory,
 ) : PerformanceRepositoryCustom {
-    override fun findPerformance(performanceId: Long): Performance? = queryFactory
+    override fun findPerformance(performanceId: Long): Performance? = jpaQueryFactory
         .selectFrom(performance)
         .join(performance.concert, concert).fetchJoin()
         .where(performance.id.eq(performanceId))

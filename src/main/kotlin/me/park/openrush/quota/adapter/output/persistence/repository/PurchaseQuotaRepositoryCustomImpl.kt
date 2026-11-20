@@ -9,11 +9,11 @@ import java.time.Instant
 
 @Repository
 class PurchaseQuotaRepositoryCustomImpl(
-    private val queryFactory: JPAQueryFactory,
+    private val jpaQueryFactory: JPAQueryFactory,
     private val entityManager: EntityManager,
 ) : PurchaseQuotaRepositoryCustom {
     override fun decreaseIfAllocated(userId: Long, concertId: Long, quantity: Int, modifiedAt: Instant): Long {
-        val updated = queryFactory.update(concertPurchaseQuota)
+        val updatedRowCount = jpaQueryFactory.update(concertPurchaseQuota)
             .set(concertPurchaseQuota.allocatedQuantity, concertPurchaseQuota.allocatedQuantity.subtract(quantity))
             .set(concertPurchaseQuota.modifiedAt, modifiedAt)
             .where(
@@ -25,10 +25,10 @@ class PurchaseQuotaRepositoryCustomImpl(
         findQuotaId(userId, concertId)?.let {
             entityManager.detach(entityManager.getReference(ConcertPurchaseQuota::class.java, it))
         }
-        return updated
+        return updatedRowCount
     }
 
-    override fun findQuotaId(userId: Long, concertId: Long): Long? = queryFactory
+    override fun findQuotaId(userId: Long, concertId: Long): Long? = jpaQueryFactory
         .select(concertPurchaseQuota.id)
         .from(concertPurchaseQuota)
         .where(
@@ -49,7 +49,7 @@ class PurchaseQuotaRepositoryCustomImpl(
         quantity: Int,
         maxTicketsPerUser: Int,
         modifiedAt: Instant,
-    ): Long = queryFactory.update(concertPurchaseQuota)
+    ): Long = jpaQueryFactory.update(concertPurchaseQuota)
         .set(concertPurchaseQuota.allocatedQuantity, concertPurchaseQuota.allocatedQuantity.add(quantity))
         .set(concertPurchaseQuota.modifiedAt, modifiedAt)
         .where(

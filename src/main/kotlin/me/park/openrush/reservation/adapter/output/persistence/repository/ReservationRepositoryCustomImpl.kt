@@ -16,12 +16,12 @@ import java.time.Instant
 
 @Repository
 class ReservationRepositoryCustomImpl(
-    private val queryFactory: JPAQueryFactory,
+    private val jpaQueryFactory: JPAQueryFactory,
     private val entityManager: EntityManager,
-    private val jdbc: JdbcTemplate,
-    private val json: ObjectMapper,
+    private val jdbcTemplate: JdbcTemplate,
+    private val objectMapper: ObjectMapper,
 ) : ReservationRepositoryCustom {
-    override fun findExpiredReservationIds(now: Instant, afterId: Long, limit: Int): List<Long> = queryFactory
+    override fun findExpiredReservationIds(now: Instant, afterId: Long, limit: Int): List<Long> = jpaQueryFactory
         .select(reservation.id)
         .from(reservation)
         .where(
@@ -34,7 +34,7 @@ class ReservationRepositoryCustomImpl(
         .fetch()
 
     override fun expireIfHeld(reservationId: Long, now: Instant): Long {
-        val updated = queryFactory.update(reservation)
+        val updatedRowCount = jpaQueryFactory.update(reservation)
             .set(reservation.status, ReservationStatus.EXPIRED)
             .set(reservation.modifiedAt, now)
             .where(
@@ -44,10 +44,10 @@ class ReservationRepositoryCustomImpl(
             )
             .execute()
         entityManager.detach(entityManager.getReference(Reservation::class.java, reservationId))
-        return updated
+        return updatedRowCount
     }
 
-    override fun findDetailedById(id: Long): Reservation? = queryFactory
+    override fun findDetailedById(id: Long): Reservation? = jpaQueryFactory
         .selectFrom(reservation)
         .distinct()
         .leftJoin(reservation.reservationItems, reservationItem).fetchJoin()
@@ -55,7 +55,7 @@ class ReservationRepositoryCustomImpl(
         .fetchOne()
 
     override fun confirmIfHeld(reservationId: Long, userId: Long, now: Instant): Long {
-        val updated = queryFactory.update(reservation)
+        val updatedRowCount = jpaQueryFactory.update(reservation)
             .set(reservation.status, ReservationStatus.CONFIRMED)
             .set(reservation.confirmedAt, now)
             .set(reservation.modifiedAt, now)
@@ -68,11 +68,11 @@ class ReservationRepositoryCustomImpl(
             )
             .execute()
         entityManager.detach(entityManager.getReference(Reservation::class.java, reservationId))
-        return updated
+        return updatedRowCount
     }
 
     override fun cancelIfHeld(reservationId: Long, userId: Long, now: Instant): Long {
-        val updated = queryFactory.update(reservation)
+        val updatedRowCount = jpaQueryFactory.update(reservation)
             .set(reservation.status, ReservationStatus.CANCELLED)
             .set(reservation.modifiedAt, now)
             .where(
@@ -84,13 +84,13 @@ class ReservationRepositoryCustomImpl(
             )
             .execute()
         entityManager.detach(entityManager.getReference(Reservation::class.java, reservationId))
-        return updated
+        return updatedRowCount
     }
 
-    override fun lockReservation(reservationId: Long): Reservation? = queryFactory.selectFrom(reservation)
+    override fun lockReservation(reservationId: Long): Reservation? = jpaQueryFactory.selectFrom(reservation)
         .where(reservation.id.eq(reservationId)).setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
 
-    override fun lockOwnedReservation(reservationId: Long, userId: Long): Reservation? = queryFactory.selectFrom(reservation)
+    override fun lockOwnedReservation(reservationId: Long, userId: Long): Reservation? = jpaQueryFactory.selectFrom(reservation)
         .where(reservation.id.eq(reservationId), reservation.userId.eq(userId)).setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
 
     override fun configureLockTimeout(timeoutMillis: Int) {
@@ -100,21 +100,21 @@ class ReservationRepositoryCustomImpl(
             .singleResult
     }
 
-    override fun findCreationRecord(userId: Long, key: String): ReservationCreationRecord? = jdbc.query(
+    override fun findCreationRecord(userId: Long, key: String): ReservationCreationRecord? = jdbcTemplate.query(
         """
         SELECT request_payload, response FROM reservation_creation_records
         WHERE user_id = ? AND request_key = ? AND response IS NOT NULL
         """.trimIndent(),
-        { row, _ ->
+        { resultSet, _ ->
             ReservationCreationRecord(
-                row.getString("request_payload"),
-                json.readValue(row.getString("response"), CreateReservationResult::class.java),
+                resultSet.getString("request_payload"),
+                objectMapper.readValue(resultSet.getString("response"), CreateReservationResult::class.java),
             )
         },
         userId, key,
     ).singleOrNull()
 
-    override fun claimCreationRequest(userId: Long, key: String, request: String): Boolean = jdbc.update(
+    override fun claimCreationRequest(userId: Long, key: String, request: String): Boolean = jdbcTemplate.update(
         """
         INSERT INTO reservation_creation_records (user_id, request_key, request_payload)
         VALUES (?, ?, ?)
@@ -124,14 +124,14 @@ class ReservationRepositoryCustomImpl(
     ) == 1
 
     override fun completeCreationRequest(userId: Long, key: String, result: CreateReservationResult) {
-        val updated = jdbc.update(
+        val updatedRowCount = jdbcTemplate.update(
             """
             UPDATE reservation_creation_records
             SET reservation_id = ?, response = CAST(? AS jsonb)
             WHERE user_id = ? AND request_key = ? AND response IS NULL
             """.trimIndent(),
-            result.reservationId, json.writeValueAsString(result), userId, key,
+            result.reservationId, objectMapper.writeValueAsString(result), userId, key,
         )
-        check(updated == 1) { "처리 중인 예매 요청 기록을 찾을 수 없습니다." }
+        check(updatedRowCount == 1) { "처리 중인 예매 요청 기록을 찾을 수 없습니다." }
     }
 }
