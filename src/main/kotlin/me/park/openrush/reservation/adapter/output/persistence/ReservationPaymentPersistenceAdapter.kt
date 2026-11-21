@@ -12,6 +12,9 @@ import java.util.*
 class ReservationPaymentPersistenceAdapter(
     private val reservationPaymentRepository: ReservationPaymentRepository,
 ) : ReservationPaymentRepositoryPort {
+    override fun findConfirmedPayment(reservationId: Long): ReservationPaymentTransaction? =
+        reservationPaymentRepository.findConfirmedPayment(reservationId)
+
     override fun findByAttempt(reservationId: Long, attemptNumber: UUID): ReservationPaymentTransaction? =
         reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)
 

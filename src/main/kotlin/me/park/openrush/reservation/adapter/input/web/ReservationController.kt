@@ -2,6 +2,9 @@ package me.park.openrush.reservation.adapter.input.web
 
 import jakarta.validation.Valid
 import me.park.openrush.queue.application.provided.ReservationAdmissionUseCase
+import me.park.openrush.reservation.application.provided.CancelReservationCommand
+import me.park.openrush.reservation.application.provided.CancelReservationResult
+import me.park.openrush.reservation.application.provided.CancelReservationUseCase
 import me.park.openrush.reservation.application.provided.CancelReservationHoldCommand
 import me.park.openrush.reservation.application.provided.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.provided.CreateReservationCommand
@@ -15,8 +18,21 @@ import java.net.URI
 class ReservationController(
     private val createReservationUseCase: CreateReservationUseCase,
     private val cancelReservationHoldUseCase: CancelReservationHoldUseCase,
+    private val cancelReservationUseCase: CancelReservationUseCase,
     private val reservationAdmissionUseCase: ReservationAdmissionUseCase? = null,
 ) {
+    @PostMapping("/{reservationId}/cancel")
+    fun cancel(
+        @PathVariable reservationId: Long,
+        @Valid @RequestBody cancelReservationRequest: CancelReservationRequest,
+    ): CancelReservationResult = cancelReservationUseCase.cancel(
+        CancelReservationCommand(
+            reservationId = reservationId,
+            userId = cancelReservationRequest.userId,
+            cancelReason = cancelReservationRequest.cancelReason,
+        ),
+    )
+
     @PostMapping("/{reservationId}/cancel-hold")
     fun cancelHold(
         @PathVariable reservationId: Long,

@@ -16,7 +16,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders
 class CancelReservationHoldControllerTest {
     private val holdCancellations = mock(CancelReservationHoldUseCase::class.java)
     private val mvc = MockMvcBuilders.standaloneSetup(
-        ReservationController(mock(CreateReservationUseCase::class.java), holdCancellations),
+        ReservationController(mock(CreateReservationUseCase::class.java), holdCancellations, mock(me.park.openrush.reservation.application.provided.CancelReservationUseCase::class.java)),
     ).setControllerAdvice(GlobalExceptionHandler()).build()
 
     @Test

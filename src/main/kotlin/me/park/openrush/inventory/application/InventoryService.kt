@@ -10,7 +10,7 @@ import java.time.Instant
 
 @Service
 class InventoryService(private val inventoryRepository: InventoryRepositoryPort, private val clock: Clock) :
-    GetSeatsUseCase, HoldSeatsUseCase, ConfirmSeatsUseCase, ReleaseSeatsUseCase {
+    GetSeatsUseCase, HoldSeatsUseCase, ConfirmSeatsUseCase, ReleaseSeatsUseCase, ReleaseReservedSeatsUseCase {
     @Transactional(readOnly = true)
     override fun findSeats(performanceId: Long, seatIds: List<Long>): List<SeatDetails> =
         inventoryRepository.findSeats(performanceId, seatIds).map {
@@ -46,6 +46,14 @@ class InventoryService(private val inventoryRepository: InventoryRepositoryPort,
                 reservationId, seatIds, clock.instant()
             ) == seatIds.size.toLong()
         ) { "예매가 선점한 좌석을 모두 반환하지 못했습니다." }
+    }
+
+    @Transactional
+    override fun releaseReservedSeats(reservationId: Long, seatIds: List<Long>) {
+        validate(reservationId, seatIds)
+        check(inventoryRepository.releaseReservedSeats(reservationId, seatIds, clock.instant()) == seatIds.size.toLong()) {
+            "예약이 확정한 좌석을 모두 반환하지 못했습니다."
+        }
     }
 
     private fun validate(reservationId: Long, seatIds: List<Long>) {

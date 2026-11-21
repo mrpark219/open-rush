@@ -202,6 +202,9 @@ class ReservationService(
     override fun prepare(approveReservationPaymentCommand: ApproveReservationPaymentCommand): PreparedReservationPayment {
         val reservation = reservationRepository.lockOwnedReservation(approveReservationPaymentCommand.reservationId, approveReservationPaymentCommand.userId)
             ?: throw ReservationRuleViolationException("결제할 수 있는 예매가 없습니다.")
+        if (reservation.status == ReservationStatus.CANCELLED && reservation.confirmedAt != null) {
+            throw ReservationRuleViolationException("취소된 예약은 다시 확정할 수 없습니다.")
+        }
         val now = clock.reservationTimestamp()
         val approvalAllowed =
             reservation.status == ReservationStatus.HELD && now >= reservation.heldAt && now < reservation.expiresAt

@@ -77,6 +77,12 @@ class Reservation private constructor(
         checkRule(now < expiresAt, "만료된 예매는 만료 처리해야 합니다.")
     }
 
+    fun cancelConfirmed(userId: Long) {
+        checkRule(this.userId == userId, "예약자만 취소할 수 있습니다.")
+        checkRule(status == ReservationStatus.CONFIRMED, "확정된 예약만 취소할 수 있습니다.")
+        status = ReservationStatus.CANCELLED
+    }
+
     fun expire(now: Instant) {
         requireActive(now)
         checkRule(now >= expiresAt, "아직 만료되지 않은 예매입니다.")

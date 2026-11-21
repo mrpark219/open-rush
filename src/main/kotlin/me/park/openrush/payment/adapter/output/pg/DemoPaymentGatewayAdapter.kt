@@ -14,6 +14,8 @@ import org.springframework.stereotype.Component
 class DemoPaymentGatewayAdapter(private val demoPgClient: DemoPgClient) : PaymentGatewayPort {
     override fun cancel(paymentCancellationCommand: PaymentCancellationCommand): CanceledPayment {
         require(paymentCancellationCommand.provider == "demo-pg" && paymentCancellationCommand.amount > 0)
+        require(paymentCancellationCommand.amount <= paymentCancellationCommand.totalAmount)
+        require(paymentCancellationCommand.expectedBalanceAmount in 0..(paymentCancellationCommand.totalAmount - paymentCancellationCommand.amount))
         val paymentResponse = try {
             demoPgClient.cancel(
                 paymentCancellationCommand.paymentKey,
@@ -26,16 +28,40 @@ class DemoPaymentGatewayAdapter(private val demoPgClient: DemoPgClient) : Paymen
             }
             throw PaymentGatewayUnavailableException(exception)
         }
-        // 전액 환불만 지원한다. 불분명한 응답을 완료로 기록하지 않는다.
-        val paymentCancellation = paymentResponse.cancels.singleOrNull()
-        if (paymentResponse.paymentKey != paymentCancellationCommand.paymentKey || paymentResponse.orderId != paymentCancellationCommand.orderNumber ||
-            paymentResponse.currency != paymentCancellationCommand.currency || paymentResponse.totalAmount != paymentCancellationCommand.amount ||
-            paymentResponse.balanceAmount != 0L || paymentResponse.status != "CANCELED" || paymentCancellation == null ||
-            paymentCancellation.cancelAmount != paymentCancellationCommand.amount || paymentCancellation.cancelReason != paymentCancellationCommand.reason ||
-            paymentCancellation.cancelStatus != "DONE" || paymentCancellation.transactionKey.isBlank() ||
-            paymentCancellation.transactionKey.length > 255
+        return verifyCancellation(paymentResponse, paymentCancellationCommand)
+    }
+
+    private fun verifyCancellation(
+        paymentResponse: DemoPgPaymentResponse,
+        paymentCancellationCommand: PaymentCancellationCommand,
+    ): CanceledPayment {
+        verifyCanceledPaymentIdentity(paymentResponse, paymentCancellationCommand)
+        val expectedStatus = if (paymentCancellationCommand.expectedBalanceAmount == 0L) "CANCELED" else "PARTIAL_CANCELED"
+        if (paymentResponse.balanceAmount != paymentCancellationCommand.expectedBalanceAmount ||
+            paymentResponse.status != expectedStatus
         ) throw PaymentGatewayUnavailableException()
+
+        // PG는 전체 취소 이력을 반환한다. 이번 요청과 대응하는 성공 이력을 유일하게 식별해야 한다.
+        // 응답에 멱등 키가 없으므로 같은 금액과 사유가 여러 건이면 임의로 선택하지 않는다.
+        val paymentCancellation = paymentResponse.cancels.filter { cancellation ->
+            cancellation.cancelAmount == paymentCancellationCommand.amount &&
+                cancellation.cancelReason == paymentCancellationCommand.reason && cancellation.cancelStatus == "DONE"
+        }.singleOrNull() ?: throw PaymentGatewayUnavailableException()
+        if (paymentCancellation.transactionKey.isBlank() || paymentCancellation.transactionKey.length > 255) {
+            throw PaymentGatewayUnavailableException()
+        }
         return CanceledPayment(paymentCancellation.transactionKey)
+    }
+
+    private fun verifyCanceledPaymentIdentity(
+        paymentResponse: DemoPgPaymentResponse,
+        paymentCancellationCommand: PaymentCancellationCommand,
+    ) {
+        if (paymentResponse.paymentKey != paymentCancellationCommand.paymentKey ||
+            paymentResponse.orderId != paymentCancellationCommand.orderNumber ||
+            paymentResponse.currency != paymentCancellationCommand.currency ||
+            paymentResponse.totalAmount != paymentCancellationCommand.totalAmount
+        ) throw PaymentGatewayUnavailableException()
     }
 
     override fun confirm(paymentApprovalCommand: PaymentApprovalCommand): ApprovedPayment {

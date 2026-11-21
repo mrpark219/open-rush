@@ -8,4 +8,6 @@ data class PaymentCancellationCommand(
     val currency: String,
     val reason: String,
     val idempotencyKey: String,
+    val totalAmount: Long = amount,
+    val expectedBalanceAmount: Long = 0
 )

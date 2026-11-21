@@ -1,5 +1,6 @@
 package me.park.openrush.reservation.adapter.output.persistence.repository
 
+import me.park.openrush.reservation.domain.PaymentStatus
 import com.querydsl.jpa.impl.JPAQueryFactory
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
 import me.park.openrush.reservation.domain.ReservationPaymentTransactionType
@@ -9,6 +10,15 @@ import java.util.UUID
 
 @Repository
 class ReservationPaymentRepositoryCustomImpl(private val jpaQueryFactory: JPAQueryFactory) : ReservationPaymentRepositoryCustom {
+    override fun findConfirmedPayment(reservationId: Long): ReservationPaymentTransaction? = jpaQueryFactory
+        .selectFrom(reservationPaymentTransaction)
+        .where(
+            reservationPaymentTransaction.reservationId.eq(reservationId),
+            reservationPaymentTransaction.type.eq(ReservationPaymentTransactionType.APPROVED),
+            reservationPaymentTransaction.status.eq(PaymentStatus.RESERVATION_CONFIRMED),
+        )
+        .fetchOne()
+
     override fun findByAttempt(reservationId: Long, attemptNumber: UUID): ReservationPaymentTransaction? = jpaQueryFactory
         .selectFrom(reservationPaymentTransaction)
         .where(

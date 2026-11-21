@@ -4,6 +4,8 @@ import me.park.openrush.inventory.domain.PerformanceSeat
 import java.time.Instant
 
 interface SeatRepositoryCustom {
+    fun releaseReservedSeats(reservationId: Long, seatIds: List<Long>, modifiedAt: Instant): Long
+
     fun confirmHeldSeats(reservationId: Long, seatIds: List<Long>, modifiedAt: Instant): Long
 
     fun releaseHeldSeats(reservationId: Long, seatIds: List<Long>, modifiedAt: Instant): Long

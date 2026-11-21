@@ -1,5 +1,6 @@
 package me.park.openrush.reservation.application
 
+import me.park.openrush.reservation.domain.ReservationStatus
 import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
 import me.park.openrush.reservation.application.provided.RefundReservationPaymentCommand
 import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
@@ -18,21 +19,30 @@ class ReservationPaymentRefundTransactions(
     private val reservationPaymentRepository: ReservationPaymentRepositoryPort,
 ) {
     fun prepare(refundReservationPaymentCommand: RefundReservationPaymentCommand): ReservationPaymentTransaction {
-        reservationRepository.lockOwnedReservation(refundReservationPaymentCommand.reservationId, refundReservationPaymentCommand.userId)
+        val reservation = reservationRepository.lockOwnedReservation(refundReservationPaymentCommand.reservationId, refundReservationPaymentCommand.userId)
             ?: throw PaymentRecordConflictException()
         val paymentPreparation = reservationPaymentRepository.findByAttempt(refundReservationPaymentCommand.reservationId, refundReservationPaymentCommand.attemptNumber)
             ?: throw PaymentRecordConflictException()
         val approvedPaymentTransaction = reservationPaymentRepository.findApproved(paymentPreparation.provider, requireNotNull(paymentPreparation.requestedPaymentKey))
             ?: throw PaymentRecordConflictException()
         if (approvedPaymentTransaction.reservationId != refundReservationPaymentCommand.reservationId || approvedPaymentTransaction.pgOrderNumber != paymentPreparation.pgOrderNumber ||
-            approvedPaymentTransaction.status != PaymentStatus.REFUND_REQUIRED || approvedPaymentTransaction.amount <= 0
+            approvedPaymentTransaction.amount <= 0
         ) throw PaymentRecordConflictException()
 
         // 승인 행마다 하나의 환불 번호를 사용하여 다른 요청에서도 중복 환불을 막는다.
         val cancellationNumber =
             UUID.nameUUIDFromBytes("refund-${approvedPaymentTransaction.provider}-${approvedPaymentTransaction.paymentId}".toByteArray(Charsets.UTF_8))
-        return reservationPaymentRepository.findCancellationPreparation(refundReservationPaymentCommand.reservationId, cancellationNumber)
-            ?: approvedPaymentTransaction.prepareCancellation(
+        val cancellationPreparation = reservationPaymentRepository.findCancellationPreparation(
+            refundReservationPaymentCommand.reservationId, cancellationNumber,
+        )
+        if (approvedPaymentTransaction.status == PaymentStatus.RESERVATION_CONFIRMED) {
+            if (reservation.status != ReservationStatus.CANCELLED ||
+                reservation.confirmedAt == null
+            ) throw PaymentRecordConflictException()
+            return cancellationPreparation ?: throw PaymentRecordConflictException()
+        }
+        if (approvedPaymentTransaction.status != PaymentStatus.REFUND_REQUIRED) throw PaymentRecordConflictException()
+        return cancellationPreparation ?: approvedPaymentTransaction.prepareCancellation(
                 cancellationNumber = cancellationNumber,
                 cancelAmount = approvedPaymentTransaction.amount,
                 cancelReason = requireNotNull(approvedPaymentTransaction.refundReason).name,
