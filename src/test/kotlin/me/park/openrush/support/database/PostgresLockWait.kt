@@ -1,4 +1,4 @@
-package me.park.openrush
+package me.park.openrush.support.database
 
 import org.springframework.jdbc.core.JdbcTemplate
 import java.util.concurrent.TimeUnit

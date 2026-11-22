@@ -1,5 +1,6 @@
 package me.park.openrush.reservation.adapter.input.web
 
+import me.park.openrush.reservation.application.provided.CancelReservationUseCase
 import me.park.openrush.reservation.application.provided.CancelReservationHoldCommand
 import me.park.openrush.reservation.application.provided.CancelReservationHoldUseCase
 import me.park.openrush.reservation.application.provided.CreateReservationUseCase
@@ -14,25 +15,29 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 
 class CancelReservationHoldControllerTest {
-    private val holdCancellations = mock(CancelReservationHoldUseCase::class.java)
-    private val mvc = MockMvcBuilders.standaloneSetup(
-        ReservationController(mock(CreateReservationUseCase::class.java), holdCancellations, mock(me.park.openrush.reservation.application.provided.CancelReservationUseCase::class.java)),
+    private val cancelReservationHoldUseCase = mock(CancelReservationHoldUseCase::class.java)
+    private val mockMvc = MockMvcBuilders.standaloneSetup(
+        ReservationController(
+            createReservationUseCase = mock(CreateReservationUseCase::class.java),
+            cancelReservationHoldUseCase = cancelReservationHoldUseCase,
+            cancelReservationUseCase = mock(CancelReservationUseCase::class.java),
+        ),
     ).setControllerAdvice(GlobalExceptionHandler()).build()
 
     @Test
     fun `취소 성공은 204를 반환한다`() {
-        mvc.perform(
+        mockMvc.perform(
             post("/reservations/10/cancel-hold").contentType(MediaType.APPLICATION_JSON).content("""{"userId":1}""")
         )
             .andExpect(status().isNoContent)
-        verify(holdCancellations).cancelHold(CancelReservationHoldCommand(1, 10))
+        verify(cancelReservationHoldUseCase).cancelHold(CancelReservationHoldCommand(1, 10))
     }
 
     @Test
     fun `정책상 취소할 수 없는 예매는 409를 반환한다`() {
         doThrow(ReservationRuleViolationException("취소 가능한 선점 예매가 아닙니다."))
-            .`when`(holdCancellations).cancelHold(CancelReservationHoldCommand(1, 10))
-        mvc.perform(
+            .`when`(cancelReservationHoldUseCase).cancelHold(CancelReservationHoldCommand(1, 10))
+        mockMvc.perform(
             post("/reservations/10/cancel-hold").contentType(MediaType.APPLICATION_JSON).content("""{"userId":1}""")
         )
             .andExpect(status().isConflict)
@@ -47,9 +52,9 @@ class CancelReservationHoldControllerTest {
             "/reservations/10/cancel-hold" to "{}",
             "/reservations/10/cancel-hold" to "invalid"
         ).forEach { (path, body) ->
-            mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body))
+            mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest)
         }
-        verifyNoInteractions(holdCancellations)
+        verifyNoInteractions(cancelReservationHoldUseCase)
     }
 }

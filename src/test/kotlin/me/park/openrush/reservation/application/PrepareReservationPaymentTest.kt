@@ -1,6 +1,9 @@
-package me.park.openrush.reservation.adapter.output.persistence
+package me.park.openrush.reservation.application
 
-import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.support.database.DatabaseIntegrationTest
+import me.park.openrush.support.database.prepareConcurrentConnections
+import me.park.openrush.support.fixture.ConcertFixture
+import me.park.openrush.support.fixture.InventoryFixture
 import me.park.openrush.reservation.application.provided.PaymentPreparation
 import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
 import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
@@ -11,8 +14,6 @@ import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.context.annotation.Import
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
@@ -26,21 +27,20 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-@Import(TestcontainersConfiguration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false"])
-class PrepareReservationPaymentTxTest {
+@DatabaseIntegrationTest
+class PrepareReservationPaymentTest {
     @Autowired
-    private lateinit var preparePaymentTx: PrepareReservationPaymentTxUseCase
+    private lateinit var prepareReservationPaymentTxUseCase: PrepareReservationPaymentTxUseCase
     @Autowired
-    private lateinit var paymentTransactions: ReservationPaymentRepositoryPort
+    private lateinit var reservationPaymentRepository: ReservationPaymentRepositoryPort
     @Autowired
-    private lateinit var createReservation: CreateReservationUseCase
+    private lateinit var createReservationUseCase: CreateReservationUseCase
     @Autowired
-    private lateinit var cancelHold: CancelReservationHoldUseCase
+    private lateinit var cancelReservationHoldUseCase: CancelReservationHoldUseCase
     @Autowired
-    private lateinit var jdbc: JdbcTemplate
+    private lateinit var jdbcTemplate: JdbcTemplate
     @Autowired
-    private lateinit var recordPayment: RecordPaymentSuccessUseCase
+    private lateinit var recordPaymentSuccessUseCase: RecordPaymentSuccessUseCase
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
     @Autowired
@@ -51,18 +51,9 @@ class PrepareReservationPaymentTxTest {
 
     @BeforeEach
     fun setUp() {
-        jdbc.execute("TRUNCATE concerts CASCADE")
         seatNumber = 0
-        val concertId =
-            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        performanceId = id(
-            """
-            INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', now() + interval '2 days', now() - interval '1 day', now() + interval '1 day')
-            RETURNING id
-            """.trimIndent(),
-            concertId,
-        )
+        val concertId = ConcertFixture(jdbcTemplate).createConcert()
+        performanceId = ConcertFixture(jdbcTemplate).createPerformance(concertId)
     }
 
     @Test
@@ -77,18 +68,19 @@ class PrepareReservationPaymentTxTest {
         assertEquals(35000L, order.amount)
         assertTrue(requireNotNull(order.pgOrderNumber).matches(Regex("[a-zA-Z0-9_-]{6,64}")))
         assertEquals("confirm-${order.pgOrderNumber}", order.approvalIdempotencyKey)
-        assertEquals(order.id, paymentTransactions.findByAttempt(reservationId, attemptNumber)?.id)
+        assertEquals(order.id, reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)?.id)
         assertEquals(order.id, prepare(reservationId, 1L, attemptNumber).id)
         assertEquals(1, paymentTxCount())
         assertEquals(
             "HELD",
-            jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
+            jdbcTemplate.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
         )
     }
 
     @Test
     fun `같은 결제 시도가 동시에 들어오면 거래와 승인 멱등성 키는 하나만 생성한다`() {
         val reservationId = hold(15000)
+        dataSource.prepareConcurrentConnections(2)
         val barrier = CyclicBarrier(2)
         val executor = Executors.newFixedThreadPool(2)
         try {
@@ -119,8 +111,8 @@ class PrepareReservationPaymentTxTest {
         assertEquals(secondAttemptNumber, second.attemptNumber)
         assertNotEquals(first.pgOrderNumber, second.pgOrderNumber)
         assertNotEquals(first.approvalIdempotencyKey, second.approvalIdempotencyKey)
-        assertEquals(first.id, paymentTransactions.findByAttempt(reservationId, attemptNumber)?.id)
-        assertEquals(second.id, paymentTransactions.findByAttempt(reservationId, secondAttemptNumber)?.id)
+        assertEquals(first.id, reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)?.id)
+        assertEquals(second.id, reservationPaymentRepository.findByAttempt(reservationId, secondAttemptNumber)?.id)
         assertEquals(2, paymentTxCount())
     }
 
@@ -128,72 +120,72 @@ class PrepareReservationPaymentTxTest {
     fun `승인과 부분 취소는 준비 행과 동일한 PG 주문 ID로 각각 누적할 수 있다`() {
         val reservationId = hold(15000)
         val preparation = prepare(reservationId, 1L, attemptNumber)
-        val payment =
+        val recordPaymentSuccessCommand =
             RecordPaymentSuccessCommand(preparation.provider, "payment-1", reservationId, 15000, "KRW", preparation.pgOrderNumber)
 
-        val approved = recordPayment.record(payment)
-        assertEquals(approved, recordPayment.record(payment))
+        val approved = recordPaymentSuccessUseCase.record(recordPaymentSuccessCommand)
+        assertEquals(approved, recordPaymentSuccessUseCase.record(recordPaymentSuccessCommand))
         TransactionTemplate(transactionManager).executeWithoutResult {
-            val approval = requireNotNull(paymentTransactions.findApproved(payment.provider, payment.paymentId))
+            val approval = requireNotNull(reservationPaymentRepository.findApproved(recordPaymentSuccessCommand.provider, recordPaymentSuccessCommand.paymentId))
             assertEquals(attemptNumber, approval.attemptNumber)
             val first = approval.prepareCancellation(UUID.randomUUID(), 5000, "부분 취소")
             val second = approval.prepareCancellation(UUID.randomUUID(), 10000, "나머지 취소")
-            paymentTransactions.save(first)
-            paymentTransactions.save(first.canceled("cancel-1"))
-            paymentTransactions.save(second)
-            paymentTransactions.save(second.canceled("cancel-2"))
+            reservationPaymentRepository.save(first)
+            reservationPaymentRepository.save(first.canceled("cancel-1"))
+            reservationPaymentRepository.save(second)
+            reservationPaymentRepository.save(second.canceled("cancel-2"))
         }
 
         assertEquals(
             listOf("APPROVAL_PREPARED:15000", "APPROVED:15000", "CANCEL_PREPARED:5000", "CANCELED:5000", "CANCEL_PREPARED:10000", "CANCELED:10000"),
-            jdbc.queryForList(
+            jdbcTemplate.queryForList(
                 "SELECT type || ':' || amount FROM reservation_payment_tx WHERE pg_order_number = ? ORDER BY id",
                 String::class.java, preparation.pgOrderNumber,
             ),
         )
-        assertEquals(preparation.id, paymentTransactions.findByAttempt(reservationId, attemptNumber)?.id)
+        assertEquals(preparation.id, reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)?.id)
     }
 
     @Test
     fun `취소 준비 커밋 후 호출이 실패해도 같은 번호로 준비 정보를 복구하고 완료를 기록한다`() {
         val reservationId = hold(15000)
-        recordPayment.record(RecordPaymentSuccessCommand("test-provider", "payment-1", reservationId, 15000, "KRW"))
+        recordPaymentSuccessUseCase.record(RecordPaymentSuccessCommand("test-provider", "payment-1", reservationId, 15000, "KRW"))
         val cancellationNumber = UUID.randomUUID()
-        val tx = TransactionTemplate(transactionManager)
-        val preparedId = tx.execute {
-            val approval = requireNotNull(paymentTransactions.findApproved("test-provider", "payment-1"))
+        val transactionTemplate = TransactionTemplate(transactionManager)
+        val preparedId = transactionTemplate.execute {
+            val approval = requireNotNull(reservationPaymentRepository.findApproved("test-provider", "payment-1"))
             val prepared = approval.prepareCancellation(cancellationNumber, 5000, "부분 취소")
-            paymentTransactions.save(prepared)
+            reservationPaymentRepository.save(prepared)
             requireNotNull(prepared.id)
         }
 
         // PG 호출 실패는 커밋한 준비 이력을 지우지 않는다.
         assertFailsWith<IllegalStateException> { error("PG 호출 실패") }
-        val recovered = requireNotNull(paymentTransactions.findCancellationPreparation(reservationId, cancellationNumber))
+        val recovered = requireNotNull(reservationPaymentRepository.findCancellationPreparation(reservationId, cancellationNumber))
         assertEquals(preparedId, recovered.id)
         assertEquals(5000L, recovered.amount)
         assertEquals("부분 취소", recovered.cancelReason)
         assertEquals("cancel-$cancellationNumber", recovered.cancellationIdempotencyKey)
-        assertEquals(null, paymentTransactions.findCanceled(reservationId, cancellationNumber))
+        assertEquals(null, reservationPaymentRepository.findCanceled(reservationId, cancellationNumber))
 
-        tx.executeWithoutResult { paymentTransactions.save(recovered.canceled("cancel-1")) }
+        transactionTemplate.executeWithoutResult { reservationPaymentRepository.save(recovered.canceled("cancel-1")) }
 
-        val completed = requireNotNull(paymentTransactions.findCanceled(reservationId, cancellationNumber))
+        val completed = requireNotNull(reservationPaymentRepository.findCanceled(reservationId, cancellationNumber))
         assertEquals(cancellationNumber, completed.cancellationNumber)
         assertEquals(recovered.cancellationIdempotencyKey, completed.cancellationIdempotencyKey)
         assertEquals(recovered.amount, completed.amount)
         assertEquals(recovered.cancelReason, completed.cancelReason)
         assertEquals("cancel-1", completed.cancellationId)
-        assertEquals(preparedId, paymentTransactions.findCancellationPreparation(reservationId, cancellationNumber)?.id)
+        assertEquals(preparedId, reservationPaymentRepository.findCancellationPreparation(reservationId, cancellationNumber)?.id)
 
         assertFailsWith<org.springframework.dao.DataIntegrityViolationException> {
-            tx.executeWithoutResult {
-                val approval = requireNotNull(paymentTransactions.findApproved("test-provider", "payment-1"))
-                paymentTransactions.save(approval.prepareCancellation(cancellationNumber, 5000, "부분 취소"))
+            transactionTemplate.executeWithoutResult {
+                val approval = requireNotNull(reservationPaymentRepository.findApproved("test-provider", "payment-1"))
+                reservationPaymentRepository.save(approval.prepareCancellation(cancellationNumber, 5000, "부분 취소"))
             }
         }
         assertFailsWith<org.springframework.dao.DataIntegrityViolationException> {
-            tx.executeWithoutResult { paymentTransactions.save(recovered.canceled("different-cancel-id")) }
+            transactionTemplate.executeWithoutResult { reservationPaymentRepository.save(recovered.canceled("different-cancel-id")) }
         }
     }
 
@@ -201,6 +193,7 @@ class PrepareReservationPaymentTxTest {
     fun `같은 PG 결제 ID가 두 예매에 전달되면 한 예매만 확정한다`() {
         val first = hold(15000)
         val second = hold(15000)
+        dataSource.prepareConcurrentConnections(2)
         val barrier = CyclicBarrier(2)
         val executor = Executors.newFixedThreadPool(2)
         try {
@@ -208,7 +201,7 @@ class PrepareReservationPaymentTxTest {
                 executor.submit<Boolean> {
                     barrier.await(5, TimeUnit.SECONDS)
                     try {
-                        recordPayment.record(
+                        recordPaymentSuccessUseCase.record(
                             RecordPaymentSuccessCommand(
                                 "demo-pg",
                                 "conflicting-payment",
@@ -225,7 +218,7 @@ class PrepareReservationPaymentTxTest {
             }.map { it.get(10, TimeUnit.SECONDS) }
             assertEquals(1, results.count { it })
             assertEquals(1, paymentTxCount())
-            assertEquals(1, id("SELECT count(*) FROM reservations WHERE status = 'CONFIRMED'").toInt())
+            assertEquals(1, jdbcTemplate.queryForObject("SELECT count(*) FROM reservations WHERE status = 'CONFIRMED'", Int::class.java))
         } finally {
             executor.shutdownNow()
         }
@@ -236,7 +229,7 @@ class PrepareReservationPaymentTxTest {
         val schema = "payment_tx_migration_test"
         try {
             Flyway.configure().dataSource(dataSource).schemas(schema).target("4").load().migrate()
-            jdbc.execute(
+            jdbcTemplate.execute(
                 """
                 INSERT INTO $schema.concerts(id, title, description, max_tickets_per_user)
                 VALUES (1, '공연', '', 4);
@@ -252,7 +245,7 @@ class PrepareReservationPaymentTxTest {
 
             assertEquals(
                 1,
-                jdbc.queryForObject(
+                jdbcTemplate.queryForObject(
                     """
                     SELECT count(*) FROM $schema.reservation_payment_tx
                     WHERE reservation_id = 42 AND type = 'APPROVED' AND provider = 'demo-pg' AND payment_id = 'legacy-payment'
@@ -263,7 +256,7 @@ class PrepareReservationPaymentTxTest {
                 ),
             )
         } finally {
-            jdbc.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
+            jdbcTemplate.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
         }
     }
 
@@ -273,7 +266,7 @@ class PrepareReservationPaymentTxTest {
         val number = UUID.randomUUID()
         try {
             Flyway.configure().dataSource(dataSource).schemas(schema).target("6").load().migrate()
-            jdbc.execute(
+            jdbcTemplate.execute(
                 """
                 INSERT INTO $schema.concerts(id, title, description, max_tickets_per_user)
                 VALUES (1, '공연', '', 4);
@@ -283,7 +276,7 @@ class PrepareReservationPaymentTxTest {
                 VALUES (42, 1, 1, now(), now() + interval '5 minutes', 'HELD');
                 """.trimIndent(),
             )
-            jdbc.update(
+            jdbcTemplate.update(
                 """
                 INSERT INTO $schema.reservation_payment_tx
                     (id, reservation_id, type, provider, amount, attempt_id, pg_order_id,
@@ -292,7 +285,7 @@ class PrepareReservationPaymentTxTest {
                 """.trimIndent(),
                 number,
             )
-            jdbc.update(
+            jdbcTemplate.update(
                 """
                 INSERT INTO $schema.reservation_payment_tx
                     (id, reservation_id, type, provider, amount, payment_id, cancellation_id, currency)
@@ -302,17 +295,17 @@ class PrepareReservationPaymentTxTest {
 
             Flyway.configure().dataSource(dataSource).schemas(schema).load().migrate()
 
-            val row = jdbc.queryForMap("SELECT * FROM $schema.reservation_payment_tx WHERE id = 100")
+            val row = jdbcTemplate.queryForMap("SELECT * FROM $schema.reservation_payment_tx WHERE id = 100")
             assertEquals(number, row["attempt_number"])
             assertEquals("OR-existing", row["pg_order_number"])
             assertEquals("confirm-existing", row["approval_idempotency_key"])
             assertEquals("PK-existing", row["requested_payment_key"])
-            val legacy = jdbc.queryForMap("SELECT * FROM $schema.reservation_payment_tx WHERE id = 102")
+            val legacy = jdbcTemplate.queryForMap("SELECT * FROM $schema.reservation_payment_tx WHERE id = 102")
             assertEquals("CANCELED", legacy["type"])
             assertEquals("legacy-cancel", legacy["cancellation_id"])
             assertEquals(null, legacy["cancellation_number"])
             assertFailsWith<org.springframework.dao.DuplicateKeyException> {
-                jdbc.update(
+                jdbcTemplate.update(
                     """
                     INSERT INTO $schema.reservation_payment_tx
                         (id, reservation_id, type, provider, amount, attempt_number, pg_order_number,
@@ -323,7 +316,7 @@ class PrepareReservationPaymentTxTest {
                 )
             }
         } finally {
-            jdbc.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
+            jdbcTemplate.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
         }
     }
 
@@ -339,14 +332,14 @@ class PrepareReservationPaymentTxTest {
     fun `만료 시각이 지난 선점과 취소된 선점은 주문을 생성할 수 없다`() {
         val expiredHold = hold(15000)
         val cancelledHold = hold(20000)
-        jdbc.update(
+        jdbcTemplate.update(
             """
             UPDATE reservations SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute'
             WHERE id = ?
             """.trimIndent(),
             expiredHold,
         )
-        cancelHold.cancelHold(CancelReservationHoldCommand(1L, cancelledHold))
+        cancelReservationHoldUseCase.cancelHold(CancelReservationHoldCommand(1L, cancelledHold))
 
         assertFailsWith<ReservationRuleViolationException> { prepare(expiredHold, 1L, attemptNumber) }
         assertFailsWith<ReservationRuleViolationException> { prepare(cancelledHold, 1L, attemptNumber) }
@@ -360,25 +353,18 @@ class PrepareReservationPaymentTxTest {
         assertEquals(0, paymentTxCount())
     }
 
-    private fun prepare(reservationId: Long, userId: Long, attemptNumber: UUID) = preparePaymentTx.prepare(
+    private fun prepare(reservationId: Long, userId: Long, attemptNumber: UUID) = prepareReservationPaymentTxUseCase.prepare(
         ApproveReservationPaymentCommand(reservationId, userId, attemptNumber, "PK-$attemptNumber"),
     ).transaction
 
     private fun hold(vararg prices: Long): Long {
         val seatIds = prices.map { price ->
-            id(
-                """
-                INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, ?, 'AVAILABLE') RETURNING id
-                """.trimIndent(),
-                performanceId, "A-${++seatNumber}", price,
-            )
+            InventoryFixture(jdbcTemplate).createSeat(performanceId, "A-${++seatNumber}", amount = price)
         }
-        return createReservation.create(CreateReservationCommand(1L, performanceId, seatIds)).reservationId
+        return createReservationUseCase.create(CreateReservationCommand(1L, performanceId, seatIds)).reservationId
     }
 
     private fun paymentTxCount(): Int =
-        jdbc.queryForObject("SELECT count(*) FROM reservation_payment_tx", Int::class.java)!!
+        jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_payment_tx", Int::class.java)!!
 
-    private fun id(sql: String, vararg args: Any): Long = jdbc.queryForObject(sql, Long::class.java, *args)!!
 }

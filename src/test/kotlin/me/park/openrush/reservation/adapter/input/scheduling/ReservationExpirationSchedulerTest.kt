@@ -21,17 +21,17 @@ import org.springframework.test.context.junit.jupiter.SpringJUnitConfig
 )
 class ReservationExpirationSchedulerTest {
     @Autowired
-    private lateinit var expiration: ExpireReservationHoldsUseCase
+    private lateinit var expireReservationHoldsUseCase: ExpireReservationHoldsUseCase
 
     @Test
     fun `스케줄러가 만료 유스케이스를 주기적으로 실행한다`() {
-        verify(expiration, timeout(3000).atLeast(2)).expireHolds()
+        verify(expireReservationHoldsUseCase, timeout(3000).atLeast(2)).expireHolds()
     }
 
     @Configuration(proxyBeanMethods = false)
     class TestBeans {
         @Bean
-        fun expiration(): ExpireReservationHoldsUseCase = mock(ExpireReservationHoldsUseCase::class.java).also {
+        fun expireReservationHoldsUseCase(): ExpireReservationHoldsUseCase = mock(ExpireReservationHoldsUseCase::class.java).also {
             `when`(it.expireHolds()).thenReturn(ExpireReservationHoldsResult(0, 0, 0))
         }
     }

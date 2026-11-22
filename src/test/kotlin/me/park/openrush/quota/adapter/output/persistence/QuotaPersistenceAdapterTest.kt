@@ -1,7 +1,6 @@
 package me.park.openrush.quota.adapter.output.persistence
 
 import me.park.openrush.quota.adapter.output.persistence.repository.PurchaseQuotaRepository
-import me.park.openrush.quota.application.provided.AllocateQuotaCommand
 import me.park.openrush.quota.application.exception.PurchaseQuotaCreationConflictException
 import org.hibernate.exception.ConstraintViolationException
 import org.junit.jupiter.api.Test
@@ -12,17 +11,16 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
 class QuotaPersistenceAdapterTest {
-    private val repository = mock(PurchaseQuotaRepository::class.java)
-    private val adapter = QuotaPersistenceAdapter(repository)
-    private val command = AllocateQuotaCommand(1, 1, 1)
+    private val purchaseQuotaRepository = mock(PurchaseQuotaRepository::class.java)
+    private val quotaPersistenceAdapter = QuotaPersistenceAdapter(purchaseQuotaRepository)
 
     @Test
     fun `Repository가 변환한 한도 행 중복 오류를 생성 충돌로 전달한다`() {
         val failure = constraintViolation("uk_user_concert_quota")
-        `when`(repository.findQuotaId(1, 1)).thenReturn(null)
-        `when`(repository.createQuota(1, 1)).thenThrow(failure)
+        `when`(purchaseQuotaRepository.findQuotaId(1, 1)).thenReturn(null)
+        `when`(purchaseQuotaRepository.createQuota(1, 1)).thenThrow(failure)
 
-        val conflict = assertFailsWith<PurchaseQuotaCreationConflictException> { adapter.createQuota(1, 1) }
+        val conflict = assertFailsWith<PurchaseQuotaCreationConflictException> { quotaPersistenceAdapter.createQuota(1, 1) }
 
         assertSame(failure, conflict.cause)
     }
@@ -30,10 +28,10 @@ class QuotaPersistenceAdapterTest {
     @Test
     fun `다른 제약 위반은 생성 충돌로 바꾸지 않는다`() {
         val failure = constraintViolation("fk_concert_purchase_quota_concert")
-        `when`(repository.findQuotaId(1, 1)).thenReturn(null)
-        `when`(repository.createQuota(1, 1)).thenThrow(failure)
+        `when`(purchaseQuotaRepository.findQuotaId(1, 1)).thenReturn(null)
+        `when`(purchaseQuotaRepository.createQuota(1, 1)).thenThrow(failure)
 
-        assertSame(failure, assertFailsWith<DataIntegrityViolationException> { adapter.createQuota(1, 1) })
+        assertSame(failure, assertFailsWith<DataIntegrityViolationException> { quotaPersistenceAdapter.createQuota(1, 1) })
     }
 
     private fun constraintViolation(constraintName: String): DataIntegrityViolationException {

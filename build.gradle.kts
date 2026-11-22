@@ -47,7 +47,6 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     testImplementation("org.testcontainers:testcontainers-postgresql")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testRuntimeOnly("com.h2database:h2")
 }
 
 kotlin {
@@ -64,4 +63,12 @@ allOpen {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    val testForkCount = providers.gradleProperty("testForks")
+        .map(String::toInt)
+        .getOrElse(2)
+
+    require(testForkCount > 0) { "testForks must be greater than zero" }
+    maxParallelForks = testForkCount
+    // DB 초기화와 변경 가능한 Fixture가 같은 프로세스 안에서 겹치지 않게 한다.
+    systemProperty("junit.jupiter.execution.parallel.enabled", "false")
 }

@@ -1,11 +1,9 @@
 package me.park.openrush
 
 import org.junit.jupiter.api.Test
-import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.context.annotation.Import
+import me.park.openrush.support.database.DatabaseIntegrationTest
 
-@Import(TestcontainersConfiguration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false"])
+@DatabaseIntegrationTest
 class OpenRushApplicationTests {
 
     @Test

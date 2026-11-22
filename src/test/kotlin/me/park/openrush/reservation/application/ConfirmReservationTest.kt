@@ -1,7 +1,11 @@
-package me.park.openrush.reservation.adapter.output.persistence
+package me.park.openrush.reservation.application
 
-import me.park.openrush.TestcontainersConfiguration
-import me.park.openrush.awaitBlockedTransaction
+import me.park.openrush.reservation.adapter.output.persistence.ReservationPersistenceAdapter
+import me.park.openrush.support.database.DatabaseIntegrationTest
+import me.park.openrush.support.database.prepareConcurrentConnections
+import me.park.openrush.support.fixture.ConcertFixture
+import me.park.openrush.support.fixture.InventoryFixture
+import me.park.openrush.support.database.awaitBlockedTransaction
 import me.park.openrush.reservation.application.provided.*
 import me.park.openrush.reservation.application.required.ReservationRepositoryPort
 import me.park.openrush.reservation.domain.exception.ReservationRuleViolationException
@@ -10,7 +14,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
@@ -28,53 +31,50 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
 
-@Import(TestcontainersConfiguration::class, ConfirmReservationTest.Configuration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false"])
+@Import(ConfirmReservationTest.Configuration::class)
+@DatabaseIntegrationTest
 class ConfirmReservationTest {
     @Autowired
-    private lateinit var create: CreateReservationUseCase
+    private lateinit var createReservationUseCase: CreateReservationUseCase
     @Autowired
-    private lateinit var confirmation: ConfirmReservationUseCase
+    private lateinit var confirmReservationUseCase: ConfirmReservationUseCase
     @Autowired
-    private lateinit var cancellation: CancelReservationHoldUseCase
+    private lateinit var cancelReservationHoldUseCase: CancelReservationHoldUseCase
     @Autowired
-    private lateinit var expiration: ExpireReservationHoldUseCase
+    private lateinit var expireReservationHoldUseCase: ExpireReservationHoldUseCase
     @Autowired
-    private lateinit var transition: CoordinatedConfirmation
+    private lateinit var coordinatedConfirmation: CoordinatedConfirmation
     @Autowired
-    private lateinit var clock: AdjustableClock
+    private lateinit var adjustableClock: AdjustableClock
     @Autowired
-    private lateinit var jdbc: JdbcTemplate
+    private lateinit var jdbcTemplate: JdbcTemplate
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
-    private lateinit var seats: List<Long>
+    private lateinit var seatIds: List<Long>
     private var performanceId = 0L
 
     @BeforeEach
     fun setUp() {
-        clock.now = heldAt
-        transition.beforeUpdate = null
-        jdbc.execute("TRUNCATE concerts CASCADE")
-        val concertId =
-            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        performanceId = id(
-            """INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', '2026-11-06T00:00:00Z', '2026-11-03T00:00:00Z', '2026-11-05T00:00:00Z') RETURNING id""",
-            concertId
+        adjustableClock.now = heldAt
+        coordinatedConfirmation.beforeUpdate = null
+
+        val concertId = ConcertFixture(jdbcTemplate).createConcert()
+        performanceId = ConcertFixture(jdbcTemplate).createPerformance(
+            concertId = concertId,
+            startsAt = Instant.parse("2026-11-06T00:00:00Z"),
+            bookingOpensAt = Instant.parse("2026-11-03T00:00:00Z"),
+            bookingClosesAt = Instant.parse("2026-11-05T00:00:00Z"),
         )
-        seats = (1..3).map { number ->
-            id(
-                """INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$number"
-            )
+        seatIds = (1..3).map { number ->
+            InventoryFixture(jdbcTemplate).createSeat(performanceId, "A$number", amount = 50_000)
         }
     }
 
     @Test
     fun `기한 직전 확정하면 좌석과 한도를 유지하고 이후 취소와 만료를 거절한다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
-        clock.now = reservation.expiresAt.minusNanos(1)
-        confirmation.confirm(ConfirmReservationCommand(1, reservation.reservationId))
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+        adjustableClock.now = reservation.expiresAt.minusNanos(1)
+        confirmReservationUseCase.confirm(ConfirmReservationCommand(1, reservation.reservationId))
 
         assertEquals("CONFIRMED", status(reservation.reservationId))
         assertEquals(reservation.expiresAt.minusNanos(1_000), confirmedAt(reservation.reservationId))
@@ -82,26 +82,26 @@ class ConfirmReservationTest {
         assertEquals(2, allocated())
 
         assertFailsWith<ReservationRuleViolationException> {
-            cancellation.cancelHold(
+            cancelReservationHoldUseCase.cancelHold(
                 CancelReservationHoldCommand(
                     1,
                     reservation.reservationId
                 )
             )
         }
-        clock.now = reservation.expiresAt
-        assertFalse(expiration.expireHold(reservation.reservationId))
+        adjustableClock.now = reservation.expiresAt
+        assertFalse(expireReservationHoldUseCase.expireHold(reservation.reservationId))
         assertEquals(2, seatsOwnedBy(reservation.reservationId, "RESERVED"))
         assertEquals(2, allocated())
     }
 
     @Test
     fun `만료 시각에 도달한 선점은 확정할 수 없다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
-        clock.now = reservation.expiresAt
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+        adjustableClock.now = reservation.expiresAt
 
         assertFailsWith<ReservationRuleViolationException> {
-            confirmation.confirm(
+            confirmReservationUseCase.confirm(
                 ConfirmReservationCommand(
                     1,
                     reservation.reservationId
@@ -116,16 +116,16 @@ class ConfirmReservationTest {
 
     @Test
     fun `다른 사용자와 존재하지 않는 예매는 확정할 수 없다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
         assertFailsWith<ReservationRuleViolationException> {
-            confirmation.confirm(
+            confirmReservationUseCase.confirm(
                 ConfirmReservationCommand(
                     2,
                     reservation.reservationId
                 )
             )
         }
-        assertFailsWith<ReservationRuleViolationException> { confirmation.confirm(ConfirmReservationCommand(1, Long.MAX_VALUE)) }
+        assertFailsWith<ReservationRuleViolationException> { confirmReservationUseCase.confirm(ConfirmReservationCommand(1, Long.MAX_VALUE)) }
         assertEquals("HELD", status(reservation.reservationId))
         assertEquals(2, seatsOwnedBy(reservation.reservationId, "HELD"))
         assertEquals(2, allocated())
@@ -133,12 +133,12 @@ class ConfirmReservationTest {
 
     @Test
     fun `좌석 하나의 선점 소유자가 다르면 예매와 나머지 좌석의 확정도 롤백한다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
-        val other = create.create(CreateReservationCommand(2, performanceId, listOf(seats[2])))
-        jdbc.update("UPDATE performance_seats SET reservation_id = ? WHERE id = ?", other.reservationId, seats[1])
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+        val other = createReservationUseCase.create(CreateReservationCommand(2, performanceId, listOf(seatIds[2])))
+        jdbcTemplate.update("UPDATE performance_seats SET reservation_id = ? WHERE id = ?", other.reservationId, seatIds[1])
 
         assertFailsWith<IllegalStateException> {
-            confirmation.confirm(
+            confirmReservationUseCase.confirm(
                 ConfirmReservationCommand(
                     1,
                     reservation.reservationId
@@ -156,10 +156,11 @@ class ConfirmReservationTest {
     @ParameterizedTest
     @EnumSource(CompetingTransition::class)
     fun `확정 검증 뒤 취소 또는 만료가 먼저 커밋되면 확정하지 않는다`(competing: CompetingTransition) {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(2)
         val validated = CountDownLatch(1)
         val proceed = CountDownLatch(1)
-        transition.beforeUpdate = {
+        coordinatedConfirmation.beforeUpdate = {
             validated.countDown()
             check(proceed.await(10, TimeUnit.SECONDS))
         }
@@ -167,7 +168,7 @@ class ConfirmReservationTest {
         try {
             val pendingConfirmation = executor.submit<Throwable?> {
                 runCatching {
-                    confirmation.confirm(
+                    confirmReservationUseCase.confirm(
                         ConfirmReservationCommand(
                             1,
                             reservation.reservationId
@@ -178,7 +179,7 @@ class ConfirmReservationTest {
             assertTrue(validated.await(5, TimeUnit.SECONDS))
             // 확정 트랜잭션이 상태를 읽고 나면 다른 트랜잭션이 먼저 상태를 전환한다.
             when (competing) {
-                CompetingTransition.CANCELLED -> cancellation.cancelHold(
+                CompetingTransition.CANCELLED -> cancelReservationHoldUseCase.cancelHold(
                     CancelReservationHoldCommand(
                         1,
                         reservation.reservationId
@@ -186,8 +187,8 @@ class ConfirmReservationTest {
                 )
 
                 CompetingTransition.EXPIRED -> {
-                    clock.now = reservation.expiresAt
-                    assertTrue(expiration.expireHold(reservation.reservationId))
+                    adjustableClock.now = reservation.expiresAt
+                    assertTrue(expireReservationHoldUseCase.expireHold(reservation.reservationId))
                 }
             }
             proceed.countDown()
@@ -201,7 +202,7 @@ class ConfirmReservationTest {
             )
         } finally {
             proceed.countDown()
-            transition.beforeUpdate = null
+            coordinatedConfirmation.beforeUpdate = null
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }
@@ -209,23 +210,24 @@ class ConfirmReservationTest {
 
     @Test
     fun `기한 전에 검증한 확정은 행 락 대기 중 만료 시각이 지나도 상태가 HELD이면 성공한다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
         val validationTime = reservation.expiresAt.minusNanos(1_000)
-        clock.now = validationTime
+        adjustableClock.now = validationTime
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(2)
         val executor = Executors.newSingleThreadExecutor()
         try {
             val pending = checkNotNull(TransactionTemplate(transactionManager).execute {
-                jdbc.queryForObject(
+                jdbcTemplate.queryForObject(
                     "SELECT id FROM reservations WHERE id = ? FOR NO KEY UPDATE",
                     Long::class.java,
                     reservation.reservationId
                 )
-                val blockerPid = checkNotNull(jdbc.queryForObject("SELECT pg_backend_pid()", Int::class.java))
+                val blockerPid = checkNotNull(jdbcTemplate.queryForObject("SELECT pg_backend_pid()", Int::class.java))
                 val confirmationRequest = executor.submit {
-                    confirmation.confirm(ConfirmReservationCommand(1, reservation.reservationId))
+                    confirmReservationUseCase.confirm(ConfirmReservationCommand(1, reservation.reservationId))
                 }
-                jdbc.awaitBlockedTransaction(blockerPid)
-                clock.now = reservation.expiresAt.plusSeconds(1)
+                jdbcTemplate.awaitBlockedTransaction(blockerPid)
+                adjustableClock.now = reservation.expiresAt.plusSeconds(1)
                 assertEquals("HELD", status(reservation.reservationId))
                 confirmationRequest
             })
@@ -243,15 +245,16 @@ class ConfirmReservationTest {
 
     @Test
     fun `동시에 같은 예매를 확정해도 한 번만 전환한다`() {
-        val reservation = create.create(CreateReservationCommand(1, performanceId, seats.take(2)))
+        val reservation = createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(2)
         val barrier = CyclicBarrier(2)
-        transition.beforeUpdate = { barrier.await(5, TimeUnit.SECONDS) }
+        coordinatedConfirmation.beforeUpdate = { barrier.await(5, TimeUnit.SECONDS) }
         val executor = Executors.newFixedThreadPool(2)
         try {
             val results = List(2) {
                 executor.submit<Throwable?> {
                     runCatching {
-                        confirmation.confirm(
+                        confirmReservationUseCase.confirm(
                             ConfirmReservationCommand(
                                 1,
                                 reservation.reservationId
@@ -266,7 +269,7 @@ class ConfirmReservationTest {
             assertEquals(2, seatsOwnedBy(reservation.reservationId, "RESERVED"))
             assertEquals(2, allocated())
         } finally {
-            transition.beforeUpdate = null
+            coordinatedConfirmation.beforeUpdate = null
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }
@@ -275,18 +278,17 @@ class ConfirmReservationTest {
     enum class CompetingTransition { CANCELLED, EXPIRED }
 
     private fun status(id: Long) =
-        jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
+        jdbcTemplate.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
 
     private fun confirmedAt(id: Long) =
-        jdbc.queryForObject("SELECT confirmed_at FROM reservations WHERE id = ?", java.sql.Timestamp::class.java, id)
+        jdbcTemplate.queryForObject("SELECT confirmed_at FROM reservations WHERE id = ?", java.sql.Timestamp::class.java, id)
             ?.toInstant()
 
     private fun seatsOwnedBy(id: Long, status: String) =
         count("SELECT count(*) FROM performance_seats WHERE reservation_id = ? AND status = ?", id, status)
 
     private fun allocated() = count("SELECT coalesce(sum(allocated_quantity), 0) FROM concert_purchase_quotas")
-    private fun count(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Int::class.java, *args)!!
-    private fun id(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Long::class.java, *args)!!
+    private fun count(sql: String, vararg args: Any) = jdbcTemplate.queryForObject(sql, Int::class.java, *args)!!
 
     @TestConfiguration(proxyBeanMethods = false)
     class Configuration {
@@ -296,7 +298,7 @@ class ConfirmReservationTest {
 
         @Bean
         @Primary
-        fun coordinatedConfirmation(adapter: ReservationPersistenceAdapter) = CoordinatedConfirmation(adapter)
+        fun coordinatedConfirmation(reservationPersistenceAdapter: ReservationPersistenceAdapter) = CoordinatedConfirmation(reservationPersistenceAdapter)
     }
 
     class AdjustableClock : Clock() {

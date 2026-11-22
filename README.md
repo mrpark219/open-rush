@@ -150,11 +150,25 @@ PG 취소 어댑터는 최초 승인 총액과 이번 취소 금액을 분리하
 ./gradlew test --tests 'me.park.openrush.reservation.domain.*'
 ```
 
-전체 테스트에는 Docker가 필요합니다. Testcontainers가 별도의 PostgreSQL을 실행합니다.
+전체 테스트에는 Docker가 필요합니다. 기본적으로 테스트 프로세스 2개를 병렬 실행하며, 각 프로세스는 독립된 PostgreSQL 컨테이너 하나를 공유합니다. 같은 프로세스 안의 테스트는 순차 실행합니다. 따라서 다른 프로세스의 DB 초기화가 실행 중인 테스트에 영향을 주지 않습니다.
 
 ```shell
 ./gradlew test
 ```
+
+프로세스 수는 실행 환경에 맞게 변경할 수 있습니다. 순차 실행으로 비교하려면 다음과 같이 실행합니다.
+
+```shell
+./gradlew test -PtestForks=1 --rerun
+```
+
+DB 초기화 리스너는 `src/test/resources/META-INF/spring.factories`에서 Spring 테스트의 기본 리스너로 자동 등록됩니다. `DataSource`가 있는 테스트는 매번 초기화하며, 없는 테스트는 건너뜁니다. `@DatabaseIntegrationTest` 사용 여부와 관계없이 적용됩니다.
+
+`@DatabaseIntegrationTest`는 Spring Boot, `test` 프로필과 PostgreSQL 환경을 묶는 편의 어노테이션입니다. 공통 `test` 프로필에서 만료 스케줄러를 끄고 Hikari 최소 유휴 연결 수를 0으로 설정해, 여러 Spring 컨텍스트가 공유 DB의 연결을 미리 점유하지 않게 합니다. 매 테스트의 `@BeforeEach` 실행 전에 `DatabaseCleaner`가 `public` 스키마의 업무 테이블을 초기화하고 Flyway 이력은 보존합니다. Flyway는 애플리케이션 연결 풀과 별도 연결을 사용합니다. 실제 커밋, `REQUIRES_NEW`, 여러 스레드의 동작을 검증하므로 테스트 전체를 롤백 트랜잭션으로 감싸지 않습니다. 테스트에서 만든 트리거·함수와 실행 스레드는 해당 테스트가 `finally`에서 정리합니다.
+
+트랜잭션 안에서 작업자들이 서로 기다리는 동시성 테스트는 실행 전에 필요한 연결 수를 확보합니다. 연결 풀이 커지는 시점과 DB 경쟁 조건 검증이 겹치지 않도록 하는 준비 단계이며, 전역 유휴 연결 수를 늘리지는 않습니다.
+
+반복되는 공연·좌석 생성은 도메인별 Fixture를 사용하고, PG 연동 테스트는 `DemoPgStubServer`로 응답과 요청 기록을 관리합니다. 실제 예약 생성 동작이 필요한 경우에는 `CreateReservationUseCase`를 호출합니다. 공통 도구는 `src/test`에만 위치합니다.
 
 성능 테스트 실행 방법은 [벤치마크 안내](benchmarks/README.md)를 참고합니다.
 

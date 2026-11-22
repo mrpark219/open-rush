@@ -18,56 +18,56 @@ class CreateReservationFacadeTest {
     @Test
     fun `구매 한도 생성 충돌만 한 번 재시도한다`() {
         val conflict = PurchaseQuotaCreationConflictException(RuntimeException())
-        `when`(service.create(command)).thenThrow(conflict).thenReturn(result)
+        `when`(reservationService.create(createReservationCommand)).thenThrow(conflict).thenReturn(createReservationResult)
 
-        assertSame(result, facade.create(command))
-        verify(service, times(2)).create(command)
+        assertSame(createReservationResult, createReservationFacade.create(createReservationCommand))
+        verify(reservationService, times(2)).create(createReservationCommand)
     }
 
     @Test
     fun `두 번째 구매 한도 생성 충돌은 재시도하지 않고 동시성 예외로 반환한다`() {
         val conflict = PurchaseQuotaCreationConflictException(RuntimeException())
-        `when`(service.create(command)).thenThrow(conflict)
+        `when`(reservationService.create(createReservationCommand)).thenThrow(conflict)
 
-        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
+        val exception = assertFailsWith<ConcurrencyException> { createReservationFacade.create(createReservationCommand) }
 
         assertSame(conflict, exception.cause)
-        verify(service, times(2)).create(command)
+        verify(reservationService, times(2)).create(createReservationCommand)
     }
 
     @Test
     fun `다른 무결성 오류는 재시도하거나 동시성 오류로 변환하지 않는다`() {
         val integrityViolation = DataIntegrityViolationException("다른 제약 조건 위반")
-        `when`(service.create(command)).thenThrow(integrityViolation)
+        `when`(reservationService.create(createReservationCommand)).thenThrow(integrityViolation)
 
-        assertSame(integrityViolation, assertFailsWith<DataIntegrityViolationException> { facade.create(command) })
-        verify(service, times(1)).create(command)
+        assertSame(integrityViolation, assertFailsWith<DataIntegrityViolationException> { createReservationFacade.create(createReservationCommand) })
+        verify(reservationService, times(1)).create(createReservationCommand)
     }
 
     @Test
     fun `정책 거절은 재시도하지 않는다`() {
         val rejection = ReservationRuleViolationException("구매 한도 초과")
-        `when`(service.create(command)).thenThrow(rejection)
+        `when`(reservationService.create(createReservationCommand)).thenThrow(rejection)
 
-        assertSame(rejection, assertFailsWith<ReservationRuleViolationException> { facade.create(command) })
-        verify(service, times(1)).create(command)
+        assertSame(rejection, assertFailsWith<ReservationRuleViolationException> { createReservationFacade.create(createReservationCommand) })
+        verify(reservationService, times(1)).create(createReservationCommand)
     }
 
     @Test
     fun `트랜잭션 호출에서 전파된 잠금 오류는 재시도 없이 변환한다`() {
         val lockFailure = PessimisticLockException("잠금 오류")
-        `when`(service.create(command)).thenThrow(lockFailure)
+        `when`(reservationService.create(createReservationCommand)).thenThrow(lockFailure)
 
-        val exception = assertFailsWith<ConcurrencyException> { facade.create(command) }
+        val exception = assertFailsWith<ConcurrencyException> { createReservationFacade.create(createReservationCommand) }
 
         assertSame(lockFailure, exception.cause)
-        verify(service, times(1)).create(command)
+        verify(reservationService, times(1)).create(createReservationCommand)
     }
 
-    private val service = mock(ReservationService::class.java)
-    private val facade = CreateReservationFacade(service)
-    private val command = CreateReservationCommand(1, 1, listOf(1))
-    private val result = CreateReservationResult(
+    private val reservationService = mock(ReservationService::class.java)
+    private val createReservationFacade = CreateReservationFacade(reservationService)
+    private val createReservationCommand = CreateReservationCommand(1, 1, listOf(1))
+    private val createReservationResult = CreateReservationResult(
         reservationId = 1,
         performanceId = 1,
         status = ReservationStatus.HELD,

@@ -1,0 +1,9 @@
+reservation:
+  expiration:
+    enabled: false
+
+spring:
+  datasource:
+    hikari:
+      # 여러 Spring 컨텍스트가 하나의 테스트 DB를 공유하므로 유휴 연결을 미리 채우지 않는다.
+      minimum-idle: 0

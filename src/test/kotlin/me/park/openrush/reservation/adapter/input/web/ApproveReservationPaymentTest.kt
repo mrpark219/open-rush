@@ -1,9 +1,11 @@
 package me.park.openrush.reservation.adapter.input.web
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
 import jakarta.servlet.ServletException
-import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.support.database.DatabaseIntegrationTest
+import me.park.openrush.support.fixture.ConcertFixture
+import me.park.openrush.support.fixture.InventoryFixture
+import me.park.openrush.support.pg.DemoPgStubServer
+import me.park.openrush.support.pg.reply
 import me.park.openrush.reservation.application.provided.CreateReservationCommand
 import me.park.openrush.reservation.application.provided.CreateReservationUseCase
 import me.park.openrush.support.web.GlobalExceptionHandler
@@ -11,8 +13,6 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.DynamicPropertyRegistry
@@ -24,9 +24,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
-import java.net.InetSocketAddress
 import java.util.*
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -36,51 +34,40 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-@Import(TestcontainersConfiguration::class)
-@SpringBootTest(properties = ["reservation.expiration.enabled=false"])
+@DatabaseIntegrationTest
 class ApproveReservationPaymentTest {
     @Autowired
-    private lateinit var controller: ReservationPaymentController
+    private lateinit var reservationPaymentController: ReservationPaymentController
 
     @Autowired
-    private lateinit var advice: GlobalExceptionHandler
+    private lateinit var globalExceptionHandler: GlobalExceptionHandler
 
     @Autowired
-    private lateinit var reservations: CreateReservationUseCase
+    private lateinit var createReservationUseCase: CreateReservationUseCase
 
     @Autowired
-    private lateinit var jdbc: JdbcTemplate
+    private lateinit var jdbcTemplate: JdbcTemplate
 
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
-    private lateinit var mvc: MockMvc
+    private lateinit var mockMvc: MockMvc
     private var reservationId = 0L
     private lateinit var attemptNumber: UUID
     private val orderId: String
-        get() = jdbc.queryForObject(
+        get() = jdbcTemplate.queryForObject(
             "SELECT pg_order_number FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'",
             String::class.java
         )!!
 
     @BeforeEach
     fun setUp() {
-        requests.clear()
-        respond = { it.reply(500, "{}") }
-        mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(advice).build()
-        jdbc.execute("TRUNCATE concerts CASCADE")
-        val concertId =
-            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        val performanceId = id(
-            """
-            INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', now() + interval '2 days', now() - interval '1 day', now() + interval '1 day') RETURNING id
-        """.trimIndent(), concertId
-        )
-        val seatId = id(
-            "INSERT INTO performance_seats(performance_id, seat_number, price, status) VALUES (?, 'A-1', 15000, 'AVAILABLE') RETURNING id",
-            performanceId
-        )
-        reservationId = reservations.create(CreateReservationCommand(1L, performanceId, listOf(seatId))).reservationId
+        demoPgStubServer.reset()
+        mockMvc = MockMvcBuilders.standaloneSetup(reservationPaymentController).setControllerAdvice(globalExceptionHandler).build()
+        val concertFixture = ConcertFixture(jdbcTemplate)
+        val concertId = concertFixture.createConcert()
+        val performanceId = concertFixture.createPerformance(concertId)
+        val seatId = InventoryFixture(jdbcTemplate).createSeat(performanceId)
+        reservationId = createReservationUseCase.create(CreateReservationCommand(1L, performanceId, listOf(seatId))).reservationId
         attemptNumber = UUID.randomUUID()
     }
 
@@ -89,7 +76,7 @@ class ApproveReservationPaymentTest {
         var committedAndUnlocked = false
         normalResponses(beforeApproval = {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                jdbc.queryForObject(
+                jdbcTemplate.queryForObject(
                     "SELECT id FROM reservations WHERE id = ? FOR UPDATE NOWAIT",
                     Long::class.java,
                     reservationId
@@ -104,10 +91,10 @@ class ApproveReservationPaymentTest {
         assertTrue(committedAndUnlocked)
         assertEquals("CONFIRMED", reservationStatus())
         assertEquals(1, count("APPROVED"))
-        assertEquals(listOf("GET", "POST"), requests.map { it.first })
+        assertEquals(listOf("GET", "POST"), demoPgStubServer.requests.map { it.method })
         assertEquals(
             "PK-TEST",
-            jdbc.queryForObject(
+            jdbcTemplate.queryForObject(
                 "SELECT requested_payment_key FROM reservation_payment_tx WHERE type = 'APPROVAL_PREPARED'",
                 String::class.java
             )
@@ -118,27 +105,27 @@ class ApproveReservationPaymentTest {
     fun `완료된 같은 요청은 PG 재호출 없이 기존 결과를 반환한다`() {
         normalResponses()
         confirm().andExpect(status().isOk)
-        val requestCount = requests.size
+        val requestCount = demoPgStubServer.requests.size
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
-        assertEquals(requestCount, requests.size)
+        assertEquals(requestCount, demoPgStubServer.requests.size)
         assertEquals(1, count("APPROVED"))
         confirm("PK-CHANGED").andExpect(status().isConflict)
-        assertEquals(requestCount, requests.size)
+        assertEquals(requestCount, demoPgStubServer.requests.size)
         confirm(userId = 2).andExpect(status().isConflict)
-        assertEquals(requestCount, requests.size)
+        assertEquals(requestCount, demoPgStubServer.requests.size)
     }
 
     @Test
     fun `승인 응답이 유실되어도 주문 조회로 승인 결과를 저장한다`() {
         val approved = AtomicBoolean(false)
-        respond = { exchange ->
+        demoPgStubServer.respond = { exchange ->
             if (exchange.requestMethod == "POST") {
                 approved.set(true)
                 exchange.close()
             } else if (!approved.get()) exchange.reply(404, "{}") else exchange.reply(200, done())
         }
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
-        assertEquals(listOf("GET", "POST", "GET"), requests.map { it.first })
+        assertEquals(listOf("GET", "POST", "GET"), demoPgStubServer.requests.map { it.method })
         assertEquals(1, count("APPROVED"))
     }
 
@@ -146,7 +133,7 @@ class ApproveReservationPaymentTest {
     fun `승인 읽기 타임아웃도 주문 조회로 복구하며 자동 승인 재시도는 하지 않는다`() {
         val release = CountDownLatch(1)
         val approved = CountDownLatch(1)
-        respond = { exchange ->
+        demoPgStubServer.respond = { exchange ->
             if (exchange.requestMethod == "POST") {
                 approved.countDown()
                 release.await(5, TimeUnit.SECONDS)
@@ -155,7 +142,7 @@ class ApproveReservationPaymentTest {
         }
         try {
             confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
-            assertEquals(listOf("GET", "POST", "GET"), requests.map { it.first })
+            assertEquals(listOf("GET", "POST", "GET"), demoPgStubServer.requests.map { it.method })
         } finally {
             release.countDown()
         }
@@ -174,7 +161,9 @@ class ApproveReservationPaymentTest {
             assertEquals(listOf(200, 200), results.map { it.get(10, TimeUnit.SECONDS) })
             assertEquals(1, count("APPROVED"))
             assertEquals(1, count("APPROVAL_PREPARED"))
-            assertEquals(1, requests.filter { it.first == "POST" }.distinct().size)
+            val approvalRequests = demoPgStubServer.requests.filter { it.method == "POST" }
+            assertTrue(approvalRequests.isNotEmpty())
+            assertTrue(approvalRequests.all { it.hasSameContentAs(approvalRequests.first()) })
         } finally {
             callers.shutdownNow()
         }
@@ -183,36 +172,36 @@ class ApproveReservationPaymentTest {
     @Test
     fun `승인과 후속 조회가 실패하면 확인 대기하고 재요청에서 같은 주문과 키를 사용한다`() {
         val getCount = AtomicInteger()
-        respond = { exchange ->
+        demoPgStubServer.respond = { exchange ->
             if (exchange.requestMethod == "GET" && getCount.incrementAndGet() == 1) exchange.reply(404, "{}")
             else exchange.reply(503, "{}")
         }
         confirm().andExpect(status().isAccepted).andExpect(jsonPath("$.status").value("PENDING"))
         assertEquals("HELD", reservationStatus())
         assertEquals(0, count("APPROVED"))
-        val firstApproval = requests.single { it.first == "POST" }
+        val firstApproval = demoPgStubServer.requests.single { it.method == "POST" }
         normalResponses()
         confirm().andExpect(status().isOk)
-        assertEquals(firstApproval, requests.last { it.first == "POST" })
+        assertTrue(firstApproval.hasSameContentAs(demoPgStubServer.requests.last { it.method == "POST" }))
         assertEquals(1, count("APPROVAL_PREPARED"))
     }
 
     @Test
     fun `최초 조회 장애가 있으면 중복 승인을 시도하지 않고 확인 대기한다`() {
-        respond = { it.reply(503, "{}") }
+        demoPgStubServer.respond = { it.reply(503, "{}") }
         confirm().andExpect(status().isAccepted)
-        assertEquals(listOf("GET"), requests.map { it.first })
+        assertEquals(listOf("GET"), demoPgStubServer.requests.map { it.method })
     }
 
     @Test
     fun `PG 승인 후 DB 저장이 롤백되어도 재요청의 주문 조회로 복구한다`() {
         val approved = AtomicBoolean(false)
-        respond = {
+        demoPgStubServer.respond = {
             if (it.requestMethod == "POST") {
                 approved.set(true); it.reply(200, done())
             } else if (approved.get()) it.reply(200, done()) else it.reply(404, "{}")
         }
-        jdbc.execute(
+        jdbcTemplate.execute(
             """
             CREATE FUNCTION reject_test_approval() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN
@@ -223,24 +212,24 @@ class ApproveReservationPaymentTest {
             END $$
         """.trimIndent()
         )
-        jdbc.execute("CREATE TRIGGER reject_test_approval BEFORE INSERT ON reservation_payment_tx FOR EACH ROW EXECUTE FUNCTION reject_test_approval()")
+        jdbcTemplate.execute("CREATE TRIGGER reject_test_approval BEFORE INSERT ON reservation_payment_tx FOR EACH ROW EXECUTE FUNCTION reject_test_approval()")
         try {
             assertFailsWith<ServletException> { confirm() }
             assertEquals("HELD", reservationStatus())
             assertEquals(1, count("APPROVAL_PREPARED"))
             assertEquals(0, count("APPROVED"))
         } finally {
-            jdbc.execute("DROP TRIGGER reject_test_approval ON reservation_payment_tx")
-            jdbc.execute("DROP FUNCTION reject_test_approval()")
+            jdbcTemplate.execute("DROP TRIGGER reject_test_approval ON reservation_payment_tx")
+            jdbcTemplate.execute("DROP FUNCTION reject_test_approval()")
         }
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
-        assertEquals(listOf("GET", "POST", "GET"), requests.map { it.first })
+        assertEquals(listOf("GET", "POST", "GET"), demoPgStubServer.requests.map { it.method })
         assertEquals(1, count("APPROVED"))
     }
 
     @Test
     fun `PG 카드 거절은 422이고 예매 확정과 승인 이력이 없다`() {
-        respond = {
+        demoPgStubServer.respond = {
             if (it.requestMethod == "GET") it.reply(404, "{}") else it.reply(
                 403,
                 """{"code":"REJECT_CARD_PAYMENT"}"""
@@ -258,7 +247,7 @@ class ApproveReservationPaymentTest {
             { done(key = "OTHER-KEY") },
             { done(state = "CANCELED") }).forEach { response ->
             val posted = AtomicBoolean(false)
-            respond = {
+            demoPgStubServer.respond = {
                 if (it.requestMethod == "POST") {
                     posted.set(true); it.reply(200, response())
                 } else if (!posted.get()) it.reply(404, "{}") else it.reply(200, response())
@@ -290,22 +279,22 @@ class ApproveReservationPaymentTest {
 
     @Test
     fun `확인 대기 후 만료되어도 기존 승인 조회와 기록은 가능하다`() {
-        respond = { it.reply(503, "{}") }
+        demoPgStubServer.respond = { it.reply(503, "{}") }
         confirm().andExpect(status().isAccepted)
         expire()
-        respond = { it.reply(200, done()) }
+        demoPgStubServer.respond = { it.reply(200, done()) }
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
-        assertEquals(listOf("GET", "GET", "POST"), requests.map { it.first })
+        assertEquals(listOf("GET", "GET", "POST"), demoPgStubServer.requests.map { it.method })
     }
 
     @Test
     fun `확인 대기 후 만료된 주문이 PG에 없으면 새 승인은 하지 않는다`() {
-        respond = { it.reply(503, "{}") }
+        demoPgStubServer.respond = { it.reply(503, "{}") }
         confirm().andExpect(status().isAccepted)
         expire()
-        respond = { it.reply(404, "{}") }
+        demoPgStubServer.respond = { it.reply(404, "{}") }
         confirm().andExpect(status().isAccepted)
-        assertEquals(listOf("GET", "GET"), requests.map { it.first })
+        assertEquals(listOf("GET", "GET"), demoPgStubServer.requests.map { it.method })
         assertEquals(0, count("APPROVED"))
     }
 
@@ -314,7 +303,7 @@ class ApproveReservationPaymentTest {
         confirm(userId = 2).andExpect(status().isConflict)
         expire()
         confirm().andExpect(status().isConflict)
-        assertTrue(requests.isEmpty())
+        assertTrue(demoPgStubServer.requests.isEmpty())
         assertEquals(0, count("APPROVAL_PREPARED"))
     }
 
@@ -327,17 +316,17 @@ class ApproveReservationPaymentTest {
             """{"userId":1,"attemptNumber":"$attemptNumber","paymentKey":"${"X".repeat(201)}"}""",
             "{}"
         ).forEach { body ->
-            mvc.perform(
+            mockMvc.perform(
                 post("/reservations/$reservationId/confirm").contentType(MediaType.APPLICATION_JSON)
                     .content(body)
             )
                 .andExpect(status().isBadRequest)
         }
-        assertTrue(requests.isEmpty())
+        assertTrue(demoPgStubServer.requests.isEmpty())
     }
 
     private fun normalResponses(beforeApproval: () -> Unit = {}, response: () -> String = { done() }) {
-        respond = { exchange ->
+        demoPgStubServer.respond = { exchange ->
             if (exchange.requestMethod == "GET") exchange.reply(404, "{}")
             else {
                 beforeApproval()
@@ -346,7 +335,7 @@ class ApproveReservationPaymentTest {
         }
     }
 
-    private fun confirm(key: String = "PK-TEST", userId: Long = 1) = mvc.perform(
+    private fun confirm(key: String = "PK-TEST", userId: Long = 1) = mockMvc.perform(
         post("/reservations/$reservationId/confirm").contentType(MediaType.APPLICATION_JSON)
             .content("""{"userId":$userId,"attemptNumber":"$attemptNumber","paymentKey":"$key"}"""),
     )
@@ -361,57 +350,31 @@ class ApproveReservationPaymentTest {
         """{"paymentKey":"$key","orderId":"$order","currency":"$currency","totalAmount":$amount,"balanceAmount":$amount,"status":"$state"}"""
 
     private fun expire() {
-        jdbc.update(
+        jdbcTemplate.update(
             "UPDATE reservations SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute' WHERE id = ?",
             reservationId
         )
     }
 
     private fun count(type: String) =
-        jdbc.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)
+        jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)
 
     private fun reservationStatus() =
-        jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
-
-    private fun id(sql: String, vararg args: Any): Long = jdbc.queryForObject(sql, Long::class.java, *args)!!
+        jdbcTemplate.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, reservationId)
 
     companion object {
-        private val requests = CopyOnWriteArrayList<Pair<String, String>>()
-
-        @Volatile
-        private var respond: (HttpExchange) -> Unit = { it.reply(500, "{}") }
-        private val pgExecutor = Executors.newCachedThreadPool()
-        private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-            createContext("/v1/payments") { exchange ->
-                val body = exchange.requestBody.bufferedReader().use { it.readText() }
-                requests.add(
-                    exchange.requestMethod to (exchange.requestURI.path + "|" + exchange.requestHeaders.getFirst(
-                        "Idempotency-Key"
-                    ) + "|" + body)
-                )
-                respond(exchange)
-            }
-            this.executor = pgExecutor
-            start()
-        }
+        private val demoPgStubServer = DemoPgStubServer()
 
         @JvmStatic
         @DynamicPropertySource
         fun properties(registry: DynamicPropertyRegistry) {
-            registry.add("payment.demo-pg.base-url") { "http://127.0.0.1:${server.address.port}" }
+            registry.add("payment.demo-pg.base-url") { demoPgStubServer.baseUrl }
         }
 
         @JvmStatic
         @AfterAll
-        fun stop() {
-            server.stop(0); pgExecutor.shutdownNow()
-        }
-
-        private fun HttpExchange.reply(status: Int, body: String) {
-            val bytes = body.toByteArray()
-            responseHeaders.set("Content-Type", "application/json")
-            sendResponseHeaders(status, bytes.size.toLong())
-            responseBody.use { it.write(bytes) }
+        fun stopServer() {
+            demoPgStubServer.close()
         }
     }
 }

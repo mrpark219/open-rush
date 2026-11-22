@@ -1,7 +1,10 @@
-package me.park.openrush.reservation.adapter.output.persistence
+package me.park.openrush.reservation.application
 
 import jakarta.persistence.EntityManager
-import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.support.database.DatabaseIntegrationTest
+import me.park.openrush.support.database.prepareConcurrentConnections
+import me.park.openrush.support.fixture.ConcertFixture
+import me.park.openrush.support.fixture.InventoryFixture
 import me.park.openrush.quota.adapter.output.persistence.repository.PurchaseQuotaRepository
 import me.park.openrush.reservation.application.provided.CreateReservationCommand
 import me.park.openrush.reservation.application.provided.CreateReservationResult
@@ -18,7 +21,6 @@ import me.park.openrush.reservation.domain.exception.ReservationRuleViolationExc
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
@@ -27,6 +29,7 @@ import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
+import java.time.Instant
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -36,16 +39,16 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 
-@Import(TestcontainersConfiguration::class, ConditionalUpdateReservationTest.Configuration::class)
-@SpringBootTest(properties = ["spring.datasource.hikari.maximum-pool-size=16", "reservation.expiration.enabled=false"])
-class ConditionalUpdateReservationTest {
-    @Autowired private lateinit var useCase: CreateReservationUseCase
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var loader: CoordinatedSeatLoader
+@Import(CreateReservationConcurrencyTest.Configuration::class)
+@DatabaseIntegrationTest(properties = ["spring.datasource.hikari.maximum-pool-size=16"])
+class CreateReservationConcurrencyTest {
+    @Autowired private lateinit var createReservationUseCase: CreateReservationUseCase
+    @Autowired private lateinit var jdbcTemplate: JdbcTemplate
+    @Autowired private lateinit var coordinatedSeatLoader: CoordinatedSeatLoader
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
-    @Autowired private lateinit var quotaPort: AllocatePurchaseQuotaUseCase
-    @Autowired private lateinit var seatPort: HoldSeatsUseCase
+    @Autowired private lateinit var allocatePurchaseQuotaUseCase: AllocatePurchaseQuotaUseCase
+    @Autowired private lateinit var holdSeatsUseCase: HoldSeatsUseCase
     @Autowired private lateinit var purchaseQuotaRepository: PurchaseQuotaRepository
 
     private var concertId = 0L
@@ -54,13 +57,12 @@ class ConditionalUpdateReservationTest {
 
     @BeforeEach
     fun setUp() {
-        loader.afterRead.set(null)
-        jdbc.execute("TRUNCATE concerts CASCADE")
-        concertId = id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
+        coordinatedSeatLoader.afterRead.set(null)
+
+        concertId = ConcertFixture(jdbcTemplate).createConcert()
         performanceId = newPerformance()
         seatIds = (1..8).map { number ->
-            id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$number")
+            InventoryFixture(jdbcTemplate).createSeat(performanceId, "A$number", amount = 50_000)
         }
     }
 
@@ -76,12 +78,12 @@ class ConditionalUpdateReservationTest {
         assertEquals(1, allocated())
         assertEquals(1, held())
         assertEquals(results.single { it.isSuccess }.getOrThrow().reservationId,
-            jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seatIds.first()))
+            jdbcTemplate.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seatIds.first()))
     }
 
     @Test
     fun `기존 한도 행을 공유하는 동시 요청은 남은 네 매를 정확히 확보한다`() {
-        jdbc.update("INSERT INTO concert_purchase_quotas(user_id, concert_id, allocated_quantity) VALUES (1, ?, 0)", concertId)
+        jdbcTemplate.update("INSERT INTO concert_purchase_quotas(user_id, concert_id, allocated_quantity) VALUES (1, ?, 0)", concertId)
         assertQuotaRace()
     }
 
@@ -94,8 +96,7 @@ class ConditionalUpdateReservationTest {
     fun `다른 회차의 동시 요청도 같은 공연의 구매 한도를 공유한다`() {
         val otherPerformance = newPerformance()
         val otherSeats = (1..4).map {
-            id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", otherPerformance, "B$it")
+            InventoryFixture(jdbcTemplate).createSeat(otherPerformance, "B$it", amount = 50_000)
         }
         val commands = seatIds.take(4).map { command(1, it) } +
             otherSeats.map { CreateReservationCommand(1, otherPerformance, listOf(it)) }
@@ -111,28 +112,28 @@ class ConditionalUpdateReservationTest {
     @Test
     fun `조회 뒤 일부 좌석이 선점되면 부분 UPDATE와 예약과 한도를 모두 롤백한다`() {
         // 외부 요청이 AVAILABLE 상태를 읽은 직후 다른 트랜잭션이 두 번째 좌석을 선점한다.
-        loader.afterRead.set {
-            loader.afterRead.set(null)
-            useCase.create(command(2, seatIds[1]))
+        coordinatedSeatLoader.afterRead.set {
+            coordinatedSeatLoader.afterRead.set(null)
+            createReservationUseCase.create(command(2, seatIds[1]))
         }
 
         assertFailsWith<ReservationRuleViolationException> {
-            useCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
+            createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(2)))
         }
 
-        assertEquals("AVAILABLE", jdbc.queryForObject("SELECT status FROM performance_seats WHERE id = ?", String::class.java, seatIds[0]))
+        assertEquals("AVAILABLE", jdbcTemplate.queryForObject("SELECT status FROM performance_seats WHERE id = ?", String::class.java, seatIds[0]))
         assertEquals(1, held())
         assertEquals(1, allocated())
         assertEquals(1, count("reservations"))
         assertEquals(1, count("reservation_items"))
-        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM concert_purchase_quotas WHERE user_id = 1", Int::class.java))
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT count(*) FROM concert_purchase_quotas WHERE user_id = 1", Int::class.java))
     }
 
     @Test
     fun `한도 초과 시 기존 예약을 유지하고 추가 예약과 좌석 변경은 남지 않는다`() {
-        useCase.create(CreateReservationCommand(1, performanceId, seatIds.take(3)))
+        createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.take(3)))
         assertFailsWith<ReservationRuleViolationException> {
-            useCase.create(CreateReservationCommand(1, performanceId, seatIds.drop(3).take(2)))
+            createReservationUseCase.create(CreateReservationCommand(1, performanceId, seatIds.drop(3).take(2)))
         }
 
         assertEquals(3, allocated())
@@ -143,14 +144,14 @@ class ConditionalUpdateReservationTest {
 
     @Test
     fun `벌크 갱신 후 재조회는 최신 상태를 반환하고 수정 시각도 갱신된다`() {
-        val reservation = useCase.create(command(1, seatIds.first()))
-        jdbc.update("UPDATE performance_seats SET modified_at = '2000-01-01T00:00:00Z' WHERE id = ?", seatIds[1])
-        jdbc.update("UPDATE concert_purchase_quotas SET modified_at = '2000-01-01T00:00:00Z'")
+        val reservation = createReservationUseCase.create(command(1, seatIds.first()))
+        jdbcTemplate.update("UPDATE performance_seats SET modified_at = '2000-01-01T00:00:00Z' WHERE id = ?", seatIds[1])
+        jdbcTemplate.update("UPDATE concert_purchase_quotas SET modified_at = '2000-01-01T00:00:00Z'")
         TransactionTemplate(transactionManager).executeWithoutResult {
-            val quotaId = jdbc.queryForObject("SELECT id FROM concert_purchase_quotas", Long::class.java)!!
+            val quotaId = jdbcTemplate.queryForObject("SELECT id FROM concert_purchase_quotas", Long::class.java)!!
             val oldSeat = entityManager.find(PerformanceSeat::class.java, seatIds[1])
-            quotaPort.allocate(AllocateQuotaCommand(1, concertId, 1))
-            seatPort.hold(HoldSeatsCommand(reservation.reservationId, performanceId, listOf(seatIds[1])))
+            allocatePurchaseQuotaUseCase.allocate(AllocateQuotaCommand(1, concertId, 1))
+            holdSeatsUseCase.hold(HoldSeatsCommand(reservation.reservationId, performanceId, listOf(seatIds[1])))
 
             val quota = entityManager.find(ConcertPurchaseQuota::class.java, quotaId)
             val seat = entityManager.find(PerformanceSeat::class.java, seatIds[1])
@@ -158,7 +159,7 @@ class ConditionalUpdateReservationTest {
             assertEquals(2, quota.allocatedQuantity)
             assertEquals(SeatStatus.HELD, seat.status)
             assertEquals(reservation.reservationId, seat.reservationId)
-            assertTrue(quota.modifiedAt!! > java.time.Instant.parse("2000-01-01T00:00:00Z"))
+            assertTrue(quota.modifiedAt!! > Instant.parse("2000-01-01T00:00:00Z"))
             assertTrue(seat.modifiedAt!! > oldSeat.modifiedAt!!)
         }
     }
@@ -181,14 +182,13 @@ class ConditionalUpdateReservationTest {
 
     @Test
     fun `다른 회차의 좌석을 선점하려 하면 같은 요청의 유효 좌석도 롤백한다`() {
-        val reservation = useCase.create(command(1, seatIds.first()))
+        val reservation = createReservationUseCase.create(command(1, seatIds.first()))
         val otherPerformance = newPerformance()
-        val otherSeat = id("""INSERT INTO performance_seats(performance_id, seat_number, price, status)
-            VALUES (?, 'B1', 50000, 'AVAILABLE') RETURNING id""", otherPerformance)
+        val otherSeat = InventoryFixture(jdbcTemplate).createSeat(otherPerformance, "B1", amount = 50_000)
 
         assertFailsWith<me.park.openrush.inventory.domain.exception.InventoryRuleViolationException> {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                seatPort.hold(HoldSeatsCommand(reservation.reservationId, performanceId, listOf(seatIds[1], otherSeat)))
+                holdSeatsUseCase.hold(HoldSeatsCommand(reservation.reservationId, performanceId, listOf(seatIds[1], otherSeat)))
             }
         }
         assertEquals(1, held())
@@ -206,17 +206,18 @@ class ConditionalUpdateReservationTest {
     }
 
     private fun race(commands: List<CreateReservationCommand>): List<Result<CreateReservationResult>> {
-        val barrier = CyclicBarrier(commands.size) { loader.afterRead.set(null) }
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(commands.size)
+        val barrier = CyclicBarrier(commands.size) { coordinatedSeatLoader.afterRead.set(null) }
         // 모든 요청이 AVAILABLE 상태를 읽은 뒤 갱신을 시작시켜 실제 쓰기 경합을 만든다.
-        loader.afterRead.set { barrier.await(10, TimeUnit.SECONDS) }
+        coordinatedSeatLoader.afterRead.set { barrier.await(10, TimeUnit.SECONDS) }
         val executor = Executors.newFixedThreadPool(commands.size)
         return try {
             val futures = commands.map { command -> executor.submit<Result<CreateReservationResult>> {
-                runCatching { useCase.create(command) }
+                runCatching { createReservationUseCase.create(command) }
             } }
             futures.map { it.get(30, TimeUnit.SECONDS) }
         } finally {
-            loader.afterRead.set(null)
+            coordinatedSeatLoader.afterRead.set(null)
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }
@@ -229,27 +230,24 @@ class ConditionalUpdateReservationTest {
     }
 
     private fun command(userId: Long, seatId: Long) = CreateReservationCommand(userId, performanceId, listOf(seatId))
-    private fun count(table: String) = jdbc.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
-    private fun allocated() = jdbc.queryForObject("SELECT coalesce(sum(allocated_quantity), 0) FROM concert_purchase_quotas", Int::class.java)!!
-    private fun held() = jdbc.queryForObject("SELECT count(*) FROM performance_seats WHERE status = 'HELD'", Int::class.java)!!
-    private fun id(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Long::class.java, *args)!!
-    private fun newPerformance() = id("""INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-        VALUES (?, '공연장', CURRENT_TIMESTAMP + INTERVAL '2 days', CURRENT_TIMESTAMP - INTERVAL '1 day',
-        CURRENT_TIMESTAMP + INTERVAL '1 day') RETURNING id""", concertId)
+    private fun count(table: String) = jdbcTemplate.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
+    private fun allocated() = jdbcTemplate.queryForObject("SELECT coalesce(sum(allocated_quantity), 0) FROM concert_purchase_quotas", Int::class.java)!!
+    private fun held() = jdbcTemplate.queryForObject("SELECT count(*) FROM performance_seats WHERE status = 'HELD'", Int::class.java)!!
+    private fun newPerformance() = ConcertFixture(jdbcTemplate).createPerformance(concertId)
 
     @TestConfiguration(proxyBeanMethods = false)
     class Configuration {
         @Bean
         @Primary
-        fun coordinatedSeatLoader(adapter: me.park.openrush.inventory.application.InventoryService) = CoordinatedSeatLoader(adapter)
+        fun coordinatedSeatLoader(inventoryService: me.park.openrush.inventory.application.InventoryService) = CoordinatedSeatLoader(inventoryService)
     }
 
     class CoordinatedSeatLoader(private val delegate: me.park.openrush.inventory.application.InventoryService) : GetSeatsUseCase {
         val afterRead = AtomicReference<(() -> Unit)?>(null)
         override fun findSeats(performanceId: Long, seatIds: List<Long>): List<me.park.openrush.inventory.application.provided.SeatDetails> {
-            val seats = delegate.findSeats(performanceId, seatIds)
+            val seatDetails = delegate.findSeats(performanceId, seatIds)
             afterRead.get()?.invoke()
-            return seats
+            return seatDetails
         }
     }
 }

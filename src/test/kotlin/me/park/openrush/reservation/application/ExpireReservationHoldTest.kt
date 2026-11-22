@@ -1,6 +1,10 @@
-package me.park.openrush.reservation.adapter.output.persistence
+package me.park.openrush.reservation.application
 
-import me.park.openrush.TestcontainersConfiguration
+import me.park.openrush.reservation.adapter.output.persistence.ReservationPersistenceAdapter
+import me.park.openrush.support.database.DatabaseIntegrationTest
+import me.park.openrush.support.database.prepareConcurrentConnections
+import me.park.openrush.support.fixture.ConcertFixture
+import me.park.openrush.support.fixture.InventoryFixture
 import me.park.openrush.reservation.application.ReleaseReservationHoldResources
 import me.park.openrush.reservation.application.ReservationService
 import me.park.openrush.reservation.application.provided.*
@@ -11,7 +15,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
@@ -33,65 +36,62 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-@Import(TestcontainersConfiguration::class, ExpireReservationHoldTest.Configuration::class)
-@SpringBootTest(
-    properties = ["reservation.expiration.enabled=false", "reservation.expiration.batch-size=2",
+@Import(ExpireReservationHoldTest.Configuration::class)
+@DatabaseIntegrationTest(
+    properties = ["reservation.expiration.batch-size=2",
         "spring.datasource.hikari.maximum-pool-size=16", "reservation.expiration.lock-timeout-ms=200"]
 )
 class ExpireReservationHoldTest {
     @Autowired
-    private lateinit var create: CreateReservationUseCase
+    private lateinit var createReservationUseCase: CreateReservationUseCase
     @Autowired
-    private lateinit var cancel: CancelReservationHoldUseCase
+    private lateinit var cancelReservationHoldUseCase: CancelReservationHoldUseCase
     @Autowired
-    private lateinit var expiration: ExpireReservationHoldUseCase
+    private lateinit var expireReservationHoldUseCase: ExpireReservationHoldUseCase
     @Autowired
-    private lateinit var batch: ExpireReservationHoldsUseCase
+    private lateinit var expireReservationHoldsUseCase: ExpireReservationHoldsUseCase
     @Autowired
-    private lateinit var candidates: ReservationRepositoryPort
+    private lateinit var reservationRepository: ReservationRepositoryPort
     @Autowired
-    private lateinit var transition: CoordinatedExpiration
+    private lateinit var coordinatedExpiration: CoordinatedExpiration
     @Autowired
-    private lateinit var jdbc: JdbcTemplate
+    private lateinit var jdbcTemplate: JdbcTemplate
     @Autowired
-    private lateinit var adapter: ReservationPersistenceAdapter
+    private lateinit var reservationPersistenceAdapter: ReservationPersistenceAdapter
     @Autowired
-    private lateinit var holdResources: ReleaseReservationHoldResources
+    private lateinit var releaseReservationHoldResources: ReleaseReservationHoldResources
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
     private var performanceId = 0L
-    private lateinit var seats: List<Long>
+    private lateinit var seatIds: List<Long>
     private val now = Instant.parse("2026-11-04T00:00:00Z")
 
     @BeforeEach
     fun setUp() {
-        transition.beforeUpdate.set(null)
-        jdbc.execute("TRUNCATE concerts CASCADE")
-        val concertId =
-            id("INSERT INTO concerts(title, description, max_tickets_per_user) VALUES ('공연', '', 4) RETURNING id")
-        performanceId = id(
-            """INSERT INTO performances(concert_id, venue, starts_at, booking_opens_at, booking_closes_at)
-            VALUES (?, '공연장', '2026-11-06T00:00:00Z', '2026-11-03T00:00:00Z', '2026-11-05T00:00:00Z') RETURNING id""",
-            concertId
+        coordinatedExpiration.beforeUpdate.set(null)
+
+        val concertId = ConcertFixture(jdbcTemplate).createConcert()
+        performanceId = ConcertFixture(jdbcTemplate).createPerformance(
+            concertId = concertId,
+            startsAt = Instant.parse("2026-11-06T00:00:00Z"),
+            bookingOpensAt = Instant.parse("2026-11-03T00:00:00Z"),
+            bookingClosesAt = Instant.parse("2026-11-05T00:00:00Z"),
         )
-        seats = (1..8).map {
-            id(
-                """INSERT INTO performance_seats(performance_id, seat_number, price, status)
-                VALUES (?, ?, 50000, 'AVAILABLE') RETURNING id""", performanceId, "A$it"
-            )
+        seatIds = (1..8).map {
+            InventoryFixture(jdbcTemplate).createSeat(performanceId, "A$it", amount = 50_000)
         }
     }
 
     @Test
     fun `만료 시각부터 예매 전체를 만료하고 해당 좌석과 한도만 반환한다`() {
-        val due = reserve(seats.take(2))
-        val active = reserve(listOf(seats[2]))
+        val due = reserve(seatIds.take(2))
+        val active = reserve(listOf(seatIds[2]))
         makeDue(due)
-        jdbc.update("UPDATE reservations SET modified_at = '2000-01-01'")
-        jdbc.update("UPDATE performance_seats SET modified_at = '2000-01-01'")
-        jdbc.update("UPDATE concert_purchase_quotas SET modified_at = '2000-01-01'")
+        jdbcTemplate.update("UPDATE reservations SET modified_at = '2000-01-01'")
+        jdbcTemplate.update("UPDATE performance_seats SET modified_at = '2000-01-01'")
+        jdbcTemplate.update("UPDATE concert_purchase_quotas SET modified_at = '2000-01-01'")
 
-        assertTrue(expiration.expireHold(due))
+        assertTrue(expireReservationHoldUseCase.expireHold(due))
 
         assertEquals("EXPIRED", status(due))
         assertEquals("HELD", status(active))
@@ -100,8 +100,8 @@ class ExpireReservationHoldTest {
             2,
             count(
                 "SELECT count(*) FROM performance_seats WHERE id IN (?, ?) AND status = 'AVAILABLE' AND reservation_id IS NULL",
-                seats[0],
-                seats[1]
+                seatIds[0],
+                seatIds[1]
             )
         )
         assertEquals(2, count("SELECT count(*) FROM reservation_items WHERE reservation_id = ?", due))
@@ -110,8 +110,8 @@ class ExpireReservationHoldTest {
             2,
             count(
                 "SELECT count(*) FROM performance_seats WHERE id IN (?, ?) AND modified_at > '2000-01-01'",
-                seats[0],
-                seats[1]
+                seatIds[0],
+                seatIds[1]
             )
         )
         assertEquals(1, count("SELECT count(*) FROM concert_purchase_quotas WHERE modified_at > '2000-01-01'"))
@@ -119,43 +119,43 @@ class ExpireReservationHoldTest {
 
     @Test
     fun `만료 전이거나 존재하지 않는 예매는 건너뛴다`() {
-        val active = reserve(listOf(seats[0]))
-        jdbc.update("UPDATE reservations SET expires_at = ? WHERE id = ?", Timestamp.from(now.plusNanos(1000)), active)
-        assertFalse(expiration.expireHold(active))
-        assertFalse(expiration.expireHold(Long.MAX_VALUE))
+        val active = reserve(listOf(seatIds[0]))
+        jdbcTemplate.update("UPDATE reservations SET expires_at = ? WHERE id = ?", Timestamp.from(now.plusNanos(1000)), active)
+        assertFalse(expireReservationHoldUseCase.expireHold(active))
+        assertFalse(expireReservationHoldUseCase.expireHold(Long.MAX_VALUE))
         assertEquals("HELD", status(active))
         assertEquals(1, allocated())
-        assertFailsWith<IllegalArgumentException> { expiration.expireHold(0) }
+        assertFailsWith<IllegalArgumentException> { expireReservationHoldUseCase.expireHold(0) }
     }
 
     @Test
     fun `이미 취소 확정 만료된 예매는 다시 반환하지 않는다`() {
-        val cancelled = reserve(listOf(seats[0]))
-        cancel.cancelHold(CancelReservationHoldCommand(1, cancelled))
-        val confirmed = reserve(listOf(seats[1]))
+        val cancelled = reserve(listOf(seatIds[0]))
+        cancelReservationHoldUseCase.cancelHold(CancelReservationHoldCommand(1, cancelled))
+        val confirmed = reserve(listOf(seatIds[1]))
         makeDue(confirmed)
-        jdbc.update("UPDATE reservations SET status = 'CONFIRMED', confirmed_at = held_at WHERE id = ?", confirmed)
-        jdbc.update("UPDATE performance_seats SET status = 'RESERVED' WHERE reservation_id = ?", confirmed)
-        val expired = reserve(listOf(seats[2]))
+        jdbcTemplate.update("UPDATE reservations SET status = 'CONFIRMED', confirmed_at = held_at WHERE id = ?", confirmed)
+        jdbcTemplate.update("UPDATE performance_seats SET status = 'RESERVED' WHERE reservation_id = ?", confirmed)
+        val expired = reserve(listOf(seatIds[2]))
         listOf(cancelled, expired).forEach { makeDue(it) }
-        assertTrue(expiration.expireHold(expired))
+        assertTrue(expireReservationHoldUseCase.expireHold(expired))
 
-        listOf(cancelled, confirmed, expired).forEach { assertFalse(expiration.expireHold(it)) }
+        listOf(cancelled, confirmed, expired).forEach { assertFalse(expireReservationHoldUseCase.expireHold(it)) }
         assertEquals(1, allocated())
         assertEquals(
             confirmed,
-            jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats[1])
+            jdbcTemplate.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seatIds[1])
         )
         assertEquals(
             "RESERVED",
-            jdbc.queryForObject("SELECT status FROM performance_seats WHERE id = ?", String::class.java, seats[1])
+            jdbcTemplate.queryForObject("SELECT status FROM performance_seats WHERE id = ?", String::class.java, seatIds[1])
         )
     }
 
     @Test
     fun `여러 작업자가 같은 만료 예매를 처리하면 한 번만 반환한다`() {
-        val due = reserve(seats.take(2))
-        reserve(listOf(seats[2]))
+        val due = reserve(seatIds.take(2))
+        reserve(listOf(seatIds[2]))
         makeDue(due)
         val results = race(List(8) { due })
         assertEquals(1, results.count { it })
@@ -166,7 +166,7 @@ class ExpireReservationHoldTest {
 
     @Test
     fun `같은 사용자의 여러 예매를 동시에 만료해도 한도를 정확히 반환한다`() {
-        val ids = seats.take(4).map { reserve(listOf(it)).also(::makeDue) }
+        val ids = seatIds.take(4).map { reserve(listOf(it)).also(::makeDue) }
         assertTrue(race(ids).all { it })
         assertEquals(0, allocated())
         assertEquals(0, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
@@ -174,94 +174,94 @@ class ExpireReservationHoldTest {
 
     @Test
     fun `만료 후 재선점한 좌석은 이전 예매의 재처리로 해제되지 않는다`() {
-        val old = reserve(listOf(seats[0]))
+        val old = reserve(listOf(seatIds[0]))
         makeDue(old)
-        assertTrue(expiration.expireHold(old))
-        val replacement = reserve(listOf(seats[0]))
-        assertFalse(expiration.expireHold(old))
+        assertTrue(expireReservationHoldUseCase.expireHold(old))
+        val replacement = reserve(listOf(seatIds[0]))
+        assertFalse(expireReservationHoldUseCase.expireHold(old))
         assertEquals("HELD", status(replacement))
         assertEquals(
             replacement,
-            jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats[0])
+            jdbcTemplate.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seatIds[0])
         )
         assertEquals(1, allocated())
     }
 
     @Test
     fun `좌석 반환 실패 시 부분 해제와 한도와 만료 상태를 모두 롤백한다`() {
-        val due = reserve(seats.take(2))
-        val other = reserve(listOf(seats[2]))
+        val due = reserve(seatIds.take(2))
+        val other = reserve(listOf(seatIds[2]))
         makeDue(due)
-        jdbc.update("UPDATE performance_seats SET reservation_id = ? WHERE id = ?", other, seats[1])
-        assertFailsWith<IllegalStateException> { expiration.expireHold(due) }
+        jdbcTemplate.update("UPDATE performance_seats SET reservation_id = ? WHERE id = ?", other, seatIds[1])
+        assertFailsWith<IllegalStateException> { expireReservationHoldUseCase.expireHold(due) }
         assertEquals("HELD", status(due))
         assertEquals(3, allocated())
         assertEquals(3, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
         assertEquals(
             other,
-            jdbc.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seats[1])
+            jdbcTemplate.queryForObject("SELECT reservation_id FROM performance_seats WHERE id = ?", Long::class.java, seatIds[1])
         )
     }
 
     @Test
     fun `한도가 부족하거나 행이 없으면 만료 전환을 롤백한다`() {
-        val due = reserve(seats.take(2))
+        val due = reserve(seatIds.take(2))
         makeDue(due)
-        jdbc.update("UPDATE concert_purchase_quotas SET allocated_quantity = 1")
-        assertFailsWith<IllegalStateException> { expiration.expireHold(due) }
+        jdbcTemplate.update("UPDATE concert_purchase_quotas SET allocated_quantity = 1")
+        assertFailsWith<IllegalStateException> { expireReservationHoldUseCase.expireHold(due) }
         assertEquals("HELD", status(due))
         assertEquals(1, allocated())
-        jdbc.update("DELETE FROM concert_purchase_quotas")
-        assertFailsWith<IllegalStateException> { expiration.expireHold(due) }
+        jdbcTemplate.update("DELETE FROM concert_purchase_quotas")
+        assertFailsWith<IllegalStateException> { expireReservationHoldUseCase.expireHold(due) }
         assertEquals("HELD", status(due))
         assertEquals(2, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
     }
 
     @Test
     fun `조회 크기를 넘어도 모두 처리하고 실패한 앞 예매는 다음 실행에서 재시도한다`() {
-        val due = seats.take(5).mapIndexed { i, seat -> reserve(listOf(seat), i + 1L).also(::makeDue) }
-        val active = reserve(listOf(seats[5]), 6)
-        jdbc.update("UPDATE concert_purchase_quotas SET allocated_quantity = 0 WHERE user_id = 1")
+        val due = seatIds.take(5).mapIndexed { i, seat -> reserve(listOf(seat), i + 1L).also(::makeDue) }
+        val active = reserve(listOf(seatIds[5]), 6)
+        jdbcTemplate.update("UPDATE concert_purchase_quotas SET allocated_quantity = 0 WHERE user_id = 1")
 
-        assertEquals(ExpireReservationHoldsResult(4, 0, 1), batch.expireHolds())
+        assertEquals(ExpireReservationHoldsResult(4, 0, 1), expireReservationHoldsUseCase.expireHolds())
         assertEquals("HELD", status(due.first()))
         due.drop(1).forEach { assertEquals("EXPIRED", status(it)) }
         assertEquals("HELD", status(active))
         assertEquals(1, allocated())
 
-        jdbc.update("UPDATE concert_purchase_quotas SET allocated_quantity = 1 WHERE user_id = 1")
-        assertEquals(ExpireReservationHoldsResult(1, 0, 0), batch.expireHolds())
-        assertEquals(ExpireReservationHoldsResult(0, 0, 0), batch.expireHolds())
+        jdbcTemplate.update("UPDATE concert_purchase_quotas SET allocated_quantity = 1 WHERE user_id = 1")
+        assertEquals(ExpireReservationHoldsResult(1, 0, 0), expireReservationHoldsUseCase.expireHolds())
+        assertEquals(ExpireReservationHoldsResult(0, 0, 0), expireReservationHoldsUseCase.expireHolds())
         assertEquals(1, allocated())
     }
 
     @Test
     fun `대상 조회 후 다른 요청이 확정하면 만료 전환을 건너뛴다`() {
-        val due = reserve(listOf(seats[0]))
+        val due = reserve(listOf(seatIds[0]))
         makeDue(due)
-        assertEquals(listOf(due), candidates.findExpiredReservationIds(now, 0, 2))
-        transition.beforeUpdate.set {
+        assertEquals(listOf(due), reservationRepository.findExpiredReservationIds(now, 0, 2))
+        coordinatedExpiration.beforeUpdate.set {
             TransactionTemplate(transactionManager).apply {
                 propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
             }.executeWithoutResult {
-                jdbc.update("UPDATE reservations SET status = 'CONFIRMED', confirmed_at = held_at WHERE id = ?", due)
-                jdbc.update("UPDATE performance_seats SET status = 'RESERVED' WHERE reservation_id = ?", due)
+                jdbcTemplate.update("UPDATE reservations SET status = 'CONFIRMED', confirmed_at = held_at WHERE id = ?", due)
+                jdbcTemplate.update("UPDATE performance_seats SET status = 'RESERVED' WHERE reservation_id = ?", due)
             }
         }
-        assertEquals(ExpireReservationHoldsResult(0, 1, 0), batch.expireHolds())
-        transition.beforeUpdate.set(null)
+        assertEquals(ExpireReservationHoldsResult(0, 1, 0), expireReservationHoldsUseCase.expireHolds())
+        coordinatedExpiration.beforeUpdate.set(null)
         assertEquals("CONFIRMED", status(due))
         assertEquals(1, allocated())
     }
 
     @Test
     fun `만료 1나노초 전에는 선점을 취소할 수 있다`() {
-        val due = reserve(listOf(seats[0]))
+        val due = reserve(listOf(seatIds[0]))
         makeDue(due)
-        val cancellation = cancellationService(Clock.fixed(now.minusNanos(1), ZoneOffset.UTC), adapter)
+        val cancelReservationHoldUseCase = cancellationService(Clock.fixed(now.minusNanos(1), ZoneOffset.UTC), reservationPersistenceAdapter)
 
         TransactionTemplate(transactionManager).executeWithoutResult {
-            cancellation.cancelHold(CancelReservationHoldCommand(1, due))
+            cancelReservationHoldUseCase.cancelHold(CancelReservationHoldCommand(1, due))
         }
 
         assertEquals("CANCELLED", status(due))
@@ -270,28 +270,29 @@ class ExpireReservationHoldTest {
 
     @Test
     fun `만료 직전 접수한 취소와 만료가 경합해도 한 번만 반환한다`() {
-        val due = reserve(seats.take(2))
-        reserve(listOf(seats[2]))
+        val due = reserve(seatIds.take(2))
+        reserve(listOf(seatIds[2]))
         makeDue(due)
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(2)
         val barrier = CyclicBarrier(2)
-        transition.beforeUpdate.set { barrier.await(10, TimeUnit.SECONDS) }
+        coordinatedExpiration.beforeUpdate.set { barrier.await(10, TimeUnit.SECONDS) }
         // 취소는 만료 직전 시각에 접수되고, 실제 UPDATE는 만료 작업과 동시에 진행한다.
-        val cancellation = cancellationService(
+        val cancelReservationHoldUseCase = cancellationService(
             Clock.fixed(now.minusSeconds(1), ZoneOffset.UTC),
-            object : ReservationRepositoryPort by adapter {
+            object : ReservationRepositoryPort by reservationPersistenceAdapter {
                 override fun cancelHeld(reservationId: Long, userId: Long, now: Instant) {
                     barrier.await(10, TimeUnit.SECONDS)
-                    adapter.cancelHeld(reservationId, userId, now)
+                    reservationPersistenceAdapter.cancelHeld(reservationId, userId, now)
                 }
             },
         )
         val executor = Executors.newFixedThreadPool(2)
         try {
-            val expiry = executor.submit<Boolean> { expiration.expireHold(due) }
+            val expiry = executor.submit<Boolean> { expireReservationHoldUseCase.expireHold(due) }
             val cancelled = executor.submit<Result<Unit>> {
                 runCatching {
                     TransactionTemplate(transactionManager).executeWithoutResult {
-                        cancellation.cancelHold(CancelReservationHoldCommand(1, due))
+                        cancelReservationHoldUseCase.cancelHold(CancelReservationHoldCommand(1, due))
                     }
                 }
             }
@@ -303,7 +304,7 @@ class ExpireReservationHoldTest {
             assertEquals(1, allocated())
             assertEquals(1, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
         } finally {
-            transition.beforeUpdate.set(null)
+            coordinatedExpiration.beforeUpdate.set(null)
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }
@@ -312,8 +313,9 @@ class ExpireReservationHoldTest {
     @ParameterizedTest
     @ValueSource(strings = ["reservation", "quota", "seat"])
     fun `예매 한도 좌석 잠금이 오래 유지돼도 해당 예매만 롤백하고 다음 예매를 만료한다`(resource: String) {
-        val first = reserve(seats.take(2), 1).also(::makeDue)
-        val second = reserve(listOf(seats[2]), 2).also(::makeDue)
+        val first = reserve(seatIds.take(2), 1).also(::makeDue)
+        val second = reserve(listOf(seatIds[2]), 2).also(::makeDue)
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(2)
         val locked = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
@@ -321,11 +323,11 @@ class ExpireReservationHoldTest {
             val holder = executor.submit {
                 TransactionTemplate(transactionManager).executeWithoutResult {
                     when (resource) {
-                        "reservation" -> jdbc.queryForList("SELECT id FROM reservations WHERE id = ? FOR UPDATE", first)
-                        "quota" -> jdbc.queryForList("SELECT id FROM concert_purchase_quotas WHERE user_id = 1 FOR UPDATE")
-                        "seat" -> jdbc.queryForList(
+                        "reservation" -> jdbcTemplate.queryForList("SELECT id FROM reservations WHERE id = ? FOR UPDATE", first)
+                        "quota" -> jdbcTemplate.queryForList("SELECT id FROM concert_purchase_quotas WHERE user_id = 1 FOR UPDATE")
+                        "seat" -> jdbcTemplate.queryForList(
                             "SELECT id FROM performance_seats WHERE id = ? FOR UPDATE",
-                            seats[1]
+                            seatIds[1]
                         )
 
                         else -> error("알 수 없는 잠금 대상")
@@ -335,7 +337,7 @@ class ExpireReservationHoldTest {
                 }
             }
             assertTrue(locked.await(5, TimeUnit.SECONDS))
-            val worker = executor.submit<ExpireReservationHoldsResult> { batch.expireHolds() }
+            val worker = executor.submit<ExpireReservationHoldsResult> { expireReservationHoldsUseCase.expireHolds() }
             // 잠금을 풀기 전에도 첫 예매를 건너뛰고 두 번째 예매 처리를 완료해야 한다.
             assertEquals(ExpireReservationHoldsResult(1, 0, 1), worker.get(5, TimeUnit.SECONDS))
             assertEquals("HELD", status(first))
@@ -349,13 +351,13 @@ class ExpireReservationHoldTest {
                 1,
                 count(
                     "SELECT count(*) FROM performance_seats WHERE id = ? AND status = 'AVAILABLE' AND reservation_id IS NULL",
-                    seats[2]
+                    seatIds[2]
                 )
             )
 
             release.countDown()
             holder.get(5, TimeUnit.SECONDS)
-            assertEquals(ExpireReservationHoldsResult(1, 0, 0), batch.expireHolds())
+            assertEquals(ExpireReservationHoldsResult(1, 0, 0), expireReservationHoldsUseCase.expireHolds())
             assertEquals("EXPIRED", status(first))
             assertEquals(0, allocated())
             assertEquals(0, count("SELECT count(*) FROM performance_seats WHERE status = 'HELD'"))
@@ -367,24 +369,25 @@ class ExpireReservationHoldTest {
     }
 
     private fun race(ids: List<Long>): List<Boolean> {
+        checkNotNull(jdbcTemplate.dataSource).prepareConcurrentConnections(ids.size)
         val barrier = CyclicBarrier(ids.size)
-        transition.beforeUpdate.set { barrier.await(10, TimeUnit.SECONDS) }
+        coordinatedExpiration.beforeUpdate.set { barrier.await(10, TimeUnit.SECONDS) }
         val executor = Executors.newFixedThreadPool(ids.size)
         return try {
-            ids.map { id -> executor.submit<Boolean> { expiration.expireHold(id) } }
+            ids.map { id -> executor.submit<Boolean> { expireReservationHoldUseCase.expireHold(id) } }
                 .map { it.get(30, TimeUnit.SECONDS) }
         } finally {
-            transition.beforeUpdate.set(null)
+            coordinatedExpiration.beforeUpdate.set(null)
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
         }
     }
 
     private fun reserve(selected: List<Long>, user: Long = 1) =
-        create.create(CreateReservationCommand(user, performanceId, selected)).reservationId
+        createReservationUseCase.create(CreateReservationCommand(user, performanceId, selected)).reservationId
 
     private fun makeDue(id: Long) {
-        jdbc.update(
+        jdbcTemplate.update(
             "UPDATE reservations SET held_at = ?, expires_at = ? WHERE id = ?",
             Timestamp.from(now.minusSeconds(300)),
             Timestamp.from(now),
@@ -393,21 +396,20 @@ class ExpireReservationHoldTest {
     }
 
     private fun status(id: Long) =
-        jdbc.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
+        jdbcTemplate.queryForObject("SELECT status FROM reservations WHERE id = ?", String::class.java, id)
 
     private fun allocated() = count("SELECT coalesce(sum(allocated_quantity), 0) FROM concert_purchase_quotas")
-    private fun count(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Int::class.java, *args)!!
-    private fun id(sql: String, vararg args: Any) = jdbc.queryForObject(sql, Long::class.java, *args)!!
+    private fun count(sql: String, vararg args: Any) = jdbcTemplate.queryForObject(sql, Int::class.java, *args)!!
 
     private inline fun <reified T : Any> unused(): T = org.mockito.Mockito.mock(T::class.java)
 
-    private fun cancellationService(clock: Clock, cancellation: ReservationRepositoryPort) = ReservationService(
+    private fun cancellationService(clock: Clock, reservationRepository: ReservationRepositoryPort) = ReservationService(
         getPerformanceUseCase = unused(), getSeatsUseCase = unused(), allocatePurchaseQuotaUseCase = unused(),
         holdSeatsUseCase = unused(),
         clock = clock,
-        confirmSeatsUseCase = unused(), releaseReservationHoldResources = holdResources,
+        confirmSeatsUseCase = unused(), releaseReservationHoldResources = releaseReservationHoldResources,
         configureExpirationTransactionPort = unused(),
-        reservationRepository = cancellation, reservationPaymentTransactionsUseCase = unused(), holdDurationMillis = 300000,
+        reservationRepository = reservationRepository, reservationPaymentTransactionsUseCase = unused(), holdDurationMillis = 300000,
     )
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -418,7 +420,7 @@ class ExpireReservationHoldTest {
 
         @Bean
         @Primary
-        fun coordinatedExpiration(adapter: ReservationPersistenceAdapter) = CoordinatedExpiration(adapter)
+        fun coordinatedExpiration(reservationPersistenceAdapter: ReservationPersistenceAdapter) = CoordinatedExpiration(reservationPersistenceAdapter)
     }
 
     class CoordinatedExpiration(private val delegate: ReservationPersistenceAdapter) :
