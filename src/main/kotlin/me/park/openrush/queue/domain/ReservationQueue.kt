@@ -4,10 +4,6 @@ import me.park.openrush.queue.domain.exception.QueueException
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
-import kotlin.collections.ArrayDeque
-import kotlin.collections.linkedSetOf
-import kotlin.collections.mutableMapOf
-import kotlin.collections.set
 
 class ReservationQueue(
     private val clock: Clock,
@@ -35,68 +31,133 @@ class ReservationQueue(
     @Synchronized
     fun join(userId: Long): QueueTicketView {
         require(userId > 0)
-        val now = advance()
-        byUser[userId]?.let { return view(it) }
-        if (byId.size >= capacity) throw QueueException(QueueError.QUEUE_FULL)
 
-        val ticket = Ticket(UUID.randomUUID(), userId, ++sequence, now.plusMillis(waitTtlMillis))
-        byId[ticket.id] = ticket
-        byUser[userId] = ticket
-        waiting.addLast(ticket)
+        val now = advance()
+        val existingTicket = byUser[userId]
+        if (existingTicket != null) {
+            return view(existingTicket)
+        }
+
+        if (byId.size >= capacity) {
+            throw QueueException(QueueError.QUEUE_FULL)
+        }
+
+        val ticket = registerWaitingTicket(userId, now)
         admitNext(now)
+
         return view(ticket)
     }
 
     @Synchronized
     fun status(ticketId: UUID): QueueTicketView {
         advance()
-        return view(byId[ticketId] ?: throw QueueException(QueueError.QUEUE_TICKET_NOT_FOUND))
+
+        val ticket = byId[ticketId]
+        if (ticket == null) {
+            throw QueueException(QueueError.QUEUE_TICKET_NOT_FOUND)
+        }
+
+        return view(ticket)
     }
 
     @Synchronized
     fun consume(userId: Long, ticketHeader: String?): AutoCloseable {
         advance()
+
         val ticket = byUser[userId]
-        if (ticket == null || ticketHeader != ticket.id.toString() || ticket.status != QueueTicketStatus.ADMITTED) {
+        if (ticket == null ||
+            ticketHeader != ticket.id.toString() ||
+            ticket.status != QueueTicketStatus.ADMITTED
+        ) {
             throw QueueException(QueueError.QUEUE_ADMISSION_REQUIRED)
         }
+
         admitted.remove(ticket)
         ticket.status = QueueTicketStatus.PROCESSING
         processing++
+
         return AutoCloseable { finish(ticket) }
     }
 
     @Synchronized
     private fun finish(ticket: Ticket) {
-        if (byId[ticket.id] !== ticket) return
+        if (byId[ticket.id] !== ticket) {
+            return
+        }
+
         forget(ticket)
         processing--
+
         advance()
+    }
+
+    private fun registerWaitingTicket(userId: Long, now: Instant): Ticket {
+        val ticket = Ticket(
+            id = UUID.randomUUID(),
+            userId = userId,
+            sequence = ++sequence,
+            expiresAt = now.plusMillis(waitTtlMillis),
+        )
+
+        byId[ticket.id] = ticket
+        byUser[userId] = ticket
+        waiting.addLast(ticket)
+
+        return ticket
     }
 
     private fun advance(): Instant {
         val now = maxOf(lastObservedAt, clock.instant())
         lastObservedAt = now
-        while (waiting.firstOrNull()?.let { it.expiresAt <= now } == true) {
-            forget(waiting.removeFirst())
-        }
-        val permits = admitted.iterator()
-        while (permits.hasNext()) {
-            val ticket = permits.next()
-            if (ticket.expiresAt > now) break
-            permits.remove()
-            forget(ticket)
-        }
+
+        removeExpiredWaitingTickets(now)
+        removeExpiredAdmissions(now)
         admitNext(now)
+
         return now
     }
 
+    private fun removeExpiredWaitingTickets(now: Instant) {
+        while (waiting.isNotEmpty()) {
+            if (waiting.first().expiresAt > now) {
+                break
+            }
+
+            forget(waiting.removeFirst())
+        }
+    }
+
+    private fun removeExpiredAdmissions(now: Instant) {
+        val permits = admitted.iterator()
+        while (permits.hasNext()) {
+            val ticket = permits.next()
+            if (ticket.expiresAt > now) {
+                break
+            }
+
+            permits.remove()
+            forget(ticket)
+        }
+    }
+
     private fun admitNext(now: Instant) {
-        if (now < nextAdmissionAt || admitted.size + processing >= maxInFlight) return
-        val ticket = waiting.removeFirstOrNull() ?: return
+        if (now < nextAdmissionAt) {
+            return
+        }
+
+        if (admitted.size + processing >= maxInFlight) {
+            return
+        }
+
+        val ticket = waiting.removeFirstOrNull()
+        if (ticket == null) {
+            return
+        }
+
         ticket.status = QueueTicketStatus.ADMITTED
         ticket.expiresAt = now.plusMillis(permitTtlMillis)
         admitted.add(ticket)
+
         nextAdmissionAt = now.plusNanos(intervalNanos)
     }
 
@@ -105,14 +166,33 @@ class ReservationQueue(
         byUser.remove(ticket.userId)
     }
 
-    private fun view(ticket: Ticket) = QueueTicketView(
-        ticketId = ticket.id,
-        status = ticket.status,
-        position = if (ticket.status == QueueTicketStatus.WAITING) ticket.sequence - waiting.first().sequence + 1 else null,
-        expiresAt = ticket.expiresAt.takeUnless { ticket.status == QueueTicketStatus.PROCESSING },
-    )
+    private fun view(ticket: Ticket): QueueTicketView {
+        val position = if (ticket.status == QueueTicketStatus.WAITING) {
+            ticket.sequence - waiting.first().sequence + 1
+        } else {
+            null
+        }
 
-    private class Ticket(val id: UUID, val userId: Long, val sequence: Long, var expiresAt: Instant) {
+        val expiresAt = if (ticket.status == QueueTicketStatus.PROCESSING) {
+            null
+        } else {
+            ticket.expiresAt
+        }
+
+        return QueueTicketView(
+            ticketId = ticket.id,
+            status = ticket.status,
+            position = position,
+            expiresAt = expiresAt,
+        )
+    }
+
+    private class Ticket(
+        val id: UUID,
+        val userId: Long,
+        val sequence: Long,
+        var expiresAt: Instant,
+    ) {
         var status = QueueTicketStatus.WAITING
     }
 }

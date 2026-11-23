@@ -7,13 +7,17 @@ import me.park.openrush.queue.application.required.QueueStorePort
 import me.park.openrush.queue.domain.QueueTicketView
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
-import java.util.*
+import java.util.UUID
 
 @Service
 @ConditionalOnProperty(prefix = "queue", name = ["enabled"], havingValue = "true")
-class QueueService(private val queueStore: QueueStorePort) : JoinQueueUseCase, GetQueueTicketUseCase,
-    ReservationAdmissionUseCase {
+class QueueService(
+    private val queueStore: QueueStorePort,
+) : JoinQueueUseCase, GetQueueTicketUseCase, ReservationAdmissionUseCase {
+
     override fun join(userId: Long): QueueTicketView = queueStore.join(userId)
+
     override fun status(ticketId: UUID): QueueTicketView = queueStore.status(ticketId)
+
     override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = queueStore.consume(userId, ticketHeader)
 }
