@@ -1,6 +1,12 @@
 spring:
   application:
     name: open-rush
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      connect-timeout: 1s
+      timeout: 1s
   datasource:
     url: jdbc:postgresql://localhost:5432/open_rush
     username: open_rush
@@ -42,6 +48,15 @@ queue:
   capacity: 10000
   wait-ttl-ms: 120000
   permit-ttl-ms: 10000
+  processing-ttl-ms: 30000
+  cleanup-batch-size: 100
+  key-prefix: "queue:{reservation}"
+  advance-interval: 10ms
+
+management:
+  health:
+    redis:
+      enabled: ${queue.enabled}
 
 payment:
   demo-pg:

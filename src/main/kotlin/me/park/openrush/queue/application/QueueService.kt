@@ -1,5 +1,6 @@
 package me.park.openrush.queue.application
 
+import me.park.openrush.queue.application.provided.AdvanceQueueUseCase
 import me.park.openrush.queue.application.provided.GetQueueTicketUseCase
 import me.park.openrush.queue.application.provided.JoinQueueUseCase
 import me.park.openrush.queue.application.provided.ReservationAdmissionUseCase
@@ -13,11 +14,13 @@ import java.util.UUID
 @ConditionalOnProperty(prefix = "queue", name = ["enabled"], havingValue = "true")
 class QueueService(
     private val queueStore: QueueStorePort,
-) : JoinQueueUseCase, GetQueueTicketUseCase, ReservationAdmissionUseCase {
+) : JoinQueueUseCase, GetQueueTicketUseCase, ReservationAdmissionUseCase, AdvanceQueueUseCase {
 
     override fun join(userId: Long): QueueTicketView = queueStore.join(userId)
 
     override fun status(ticketId: UUID): QueueTicketView = queueStore.status(ticketId)
 
     override fun consume(userId: Long, ticketHeader: String?): AutoCloseable = queueStore.consume(userId, ticketHeader)
+
+    override fun advance() = queueStore.advance()
 }

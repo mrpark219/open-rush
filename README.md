@@ -28,7 +28,7 @@
 | `quota`       | 사용자별 공연 구매 수량 확보와 반환                                 |
 | `reservation` | 예약과 가격 스냅샷, 결제 거래 이력, 예약 확정과 환불 필요 상태 관리 |
 | `payment`     | 예약 정보에 의존하지 않는 PG 승인, 조회와 취소                            |
-| `queue`       | 대기표와 입장 허가, 메모리 저장 어댑터                              |
+| `queue`       | 대기표와 입장 허가, Redis 저장 어댑터                              |
 
 각 도메인의 기본 구현은 `ConcertService`, `InventoryService`, `QuotaService`, `ReservationService`, `PaymentService`, `QueueService`입니다. 예약 생성의 충돌 재시도, 만료 배치의 건별 트랜잭션, PG 호출 전후의 트랜잭션 분리가 필요한 조율 클래스는 별도로 유지합니다. `output.local` 어댑터는 사용하지 않습니다.
 
@@ -42,7 +42,7 @@ DB 기본 키와 외래 키는 `id`/`...Id`, 결제 시도 UUID는 `attemptNumbe
 
 ## 개발 환경 실행
 
-JDK 25와 Docker Compose가 필요합니다. Compose로 PostgreSQL 18을 실행한 뒤 애플리케이션을 시작합니다.
+JDK 25와 Docker Compose가 필요합니다. Compose로 PostgreSQL 18, Redis와 Demo PG를 실행한 뒤 애플리케이션을 시작합니다.
 
 ```shell
 docker compose up -d --wait
@@ -53,6 +53,37 @@ docker compose up -d --wait
 `src/main/resources/application.yaml`을 함께 수정합니다.
 
 애플리케이션 시작 시 Flyway가 스키마를 적용하고 Hibernate가 엔티티 매핑을 검증합니다.
+
+## Redis 대기열
+
+대기열은 기존처럼 `queue.enabled=true`일 때 활성화합니다. Redis 기본 주소는 `localhost:6379`이며 `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`로 변경할 수 있습니다. 같은 Redis와 `queue.key-prefix`를 사용하는 서버는 대기표, 입장 속도, 동시 점유 한도를 공유합니다. 같은 대기열에 참여하는 서버의 `queue.*` 정책 설정도 동일하게 맞춰야 합니다.
+
+```shell
+./gradlew bootRun --args='--queue.enabled=true'
+```
+
+`POST /reservation-queue`에 `userId`를 전달해 등록하고 `GET /reservation-queue/{ticketId}`로 상태를 조회합니다. 같은 사용자의 유효한 대기표는 재사용합니다. `ADMITTED`가 되면 예약 생성 요청에 `X-Queue-Ticket` 헤더로 대기표를 전달합니다. 예약 생성 멱등성 키에 해당하는 기존 성공 결과를 반환하는 경우에는 새 입장권을 요구하지 않습니다.
+
+Lettuce를 사용하는 `StringRedisTemplate`으로 접근하며, Lua에서 검사와 상태 변경을 함께 실행합니다. 스크립트는 시작할 때 `SCRIPT LOAD`로 미리 등록하고 `EVALSHA`로 실행합니다. Redis 재시작이나 `SCRIPT FLUSH` 이후 `NOSCRIPT`가 발생하면 다시 로드한 뒤 실행합니다. 통신 타임아웃처럼 실행 여부가 불확실한 오류에 대해서는 상태 변경 명령을 자동 재시도하지 않습니다.
+
+대기표는 `WAITING → ADMITTED → PROCESSING`으로 전환됩니다. 대기와 미사용 입장권뿐 아니라 처리 중 점유에도 만료 기한을 두어 서버 종료 시 회수합니다. 처리 종료 시 고유 토큰으로 소유권을 확인하고 점유를 반환하며, 반환 실패는 로그로 남기고 만료 처리가 회수합니다. Redis 장애로 새 권한을 얻지 못하면 `503 QUEUE_UNAVAILABLE`을 반환합니다.
+
+키 접두사 기본값은 `queue:{reservation}`입니다. `{reservation}` 해시 태그로 관련 키를 같은 Redis Cluster 슬롯에 배치할 수 있도록 이름을 정했으며, 현재 연결 구성은 단일 Redis 서버입니다.
+
+| 키 접미사 | 자료형 | 내용 |
+|-----------|--------|------|
+| `sequence` | String | 등록 순번 카운터 |
+| `waiting` | Sorted Set | 대기표 ID와 등록 순번 |
+| `waiting-expiry` | Sorted Set | 대기표 ID와 대기 만료 시각 |
+| `admitted` | Sorted Set | 대기표 ID와 입장 허가 만료 시각 |
+| `processing` | Sorted Set | 대기표 ID와 처리 점유 만료 시각 |
+| `tickets` | Hash | 대기표 ID별 사용자, 상태, 만료 시각과 처리 토큰 |
+| `users` | Hash | 사용자 ID와 현재 대기표 ID |
+| `next-admission-at` | String | 다음 입장이 가능한 시각 |
+
+시간은 Redis `TIME`을 기준으로 합니다. 대기 기한은 기본 120초, 입장 허가는 10초, 처리 점유는 30초입니다. 요청과 기본 10ms 간격 주기 작업에서 만료 항목을 정리하고 다음 사용자를 입장시킵니다. Sorted Set 항목에 키 TTL을 부여하는 방식이 아니라 만료 인덱스에서 찾아 관련 상태를 함께 삭제합니다. 한 번의 실행에서 상태별 최대 `queue.cleanup-batch-size`개(기본 100개)를 정리하며, 대량 만료 시 여러 번에 걸쳐 회수하므로 잠시 수용 한도나 대기 순번이 보수적으로 표시될 수 있습니다. 입장은 한 번의 실행에 최대 한 명이며, 유휴 시간 동안 사용하지 않은 입장 횟수를 누적하지 않습니다.
+
+처리 중 점유의 만료는 실제 DB 트랜잭션을 중단하지 않습니다. `queue.processing-ttl-ms`는 정상적인 예약 처리 시간보다 충분히 크게 설정해야 하며, 좌석과 구매 한도의 정합성은 기존 DB 트랜잭션으로 보장합니다. 대기열은 전역 한 개이며 공연 회차별로 분리하지 않습니다. Redis Cluster, Sentinel과 장애 전환 시 데이터 유실까지 다루는 구성은 이번 범위에 포함하지 않습니다.
 
 ## 도메인과 예매 정책
 

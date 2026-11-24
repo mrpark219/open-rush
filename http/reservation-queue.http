@@ -1,0 +1,90 @@
+@baseUrl = http://127.0.0.1:8080
+@userId = 1001
+@secondUserId = 1002
+
+# DB에 존재하는 예매 가능한 회차와 AVAILABLE 좌석 ID로 변경하세요.
+@performanceId = 1
+@seatId = 1
+# 새 예약을 테스트할 때 변경하고, 같은 예약의 응답 재확인에는 유지하세요.
+@idempotencyKey = manual-queue-reservation-001
+
+# 먼저 Redis와 앱을 실행하세요.
+# docker compose up -d --wait
+# ./gradlew bootRun --args='--queue.enabled=true --queue.key-prefix=queue:{manual-test} --queue.admissions-per-second=1 --queue.max-in-flight=1 --queue.wait-ttl-ms=60000 --queue.permit-ttl-ms=15000'
+# 아래 요청은 위에서부터 하나씩 실행하세요. 재등록과 조회는 만료 전에 실행하세요.
+
+### 1. 첫 사용자 등록: 빈 대기열이면 ADMITTED, 대기표 ID 자동 저장
+POST {{baseUrl}}/reservation-queue
+Content-Type: application/json
+
+{"userId": {{userId}}}
+
+> {%
+    client.test("첫 사용자 등록 성공", function () {
+        client.assert(response.status === 200, "등록 응답은 200이어야 합니다.");
+    });
+    if (response.status === 200) {
+        client.global.set("firstQueueTicketId", response.body.ticketId);
+    }
+%}
+
+### 2. 두 번째 사용자 등록: 첫 사용자의 허가가 유효하면 WAITING
+POST {{baseUrl}}/reservation-queue
+Content-Type: application/json
+
+{"userId": {{secondUserId}}}
+
+> {%
+    if (response.status === 200) {
+        client.global.set("secondQueueTicketId", response.body.ticketId);
+    }
+%}
+
+### 3. 첫 사용자 중복 등록: 유효한 기존 대기표 반환
+POST {{baseUrl}}/reservation-queue
+Content-Type: application/json
+
+{"userId": {{userId}}}
+
+> {%
+    client.test("유효한 대기표 재사용", function () {
+        client.assert(response.status === 200, "등록 응답은 200이어야 합니다.");
+        client.assert(response.body.ticketId === client.global.get("firstQueueTicketId"),
+            "만료 전에는 같은 대기표를 반환해야 합니다.");
+    });
+%}
+
+### 4. 첫 사용자 상태 조회: 만료 후에는 404
+GET {{baseUrl}}/reservation-queue/{{firstQueueTicketId}}
+
+### 5. 두 번째 사용자 상태 조회: 첫 허가 만료 또는 반환 후 ADMITTED
+GET {{baseUrl}}/reservation-queue/{{secondQueueTicketId}}
+
+### 6. 입장권 없는 신규 예약: 429 QUEUE_ADMISSION_REQUIRED
+POST {{baseUrl}}/reservations
+Content-Type: application/json
+
+{"userId": {{userId}}, "performanceId": {{performanceId}}, "seatIds": [{{seatId}}]}
+
+### 7. 첫 사용자의 유효한 입장권으로 예약: ADMITTED일 때 실행
+# 첫 입장권이 만료됐다면 1번을 다시 실행한 뒤 호출하세요.
+POST {{baseUrl}}/reservations
+Content-Type: application/json
+X-Queue-Ticket: {{firstQueueTicketId}}
+Idempotency-Key: {{idempotencyKey}}
+
+{"userId": {{userId}}, "performanceId": {{performanceId}}, "seatIds": [{{seatId}}]}
+
+### 8. 성공 응답 재확인: 7번 성공 후 입장권 없이 같은 키로 기존 결과 반환
+POST {{baseUrl}}/reservations
+Content-Type: application/json
+Idempotency-Key: {{idempotencyKey}}
+
+{"userId": {{userId}}, "performanceId": {{performanceId}}, "seatIds": [{{seatId}}]}
+
+### 9. 소비한 입장권 재사용: 7번 성공 후 새 예약 요청은 429
+POST {{baseUrl}}/reservations
+Content-Type: application/json
+X-Queue-Ticket: {{firstQueueTicketId}}
+
+{"userId": {{userId}}, "performanceId": {{performanceId}}, "seatIds": [{{seatId}}]}

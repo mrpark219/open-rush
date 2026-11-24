@@ -1,5 +1,16 @@
 name: open-rush-benchmark
 services:
+  redis:
+    image: redis:8.2.11-alpine
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: postgres:18
     environment:

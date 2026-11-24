@@ -1,6 +1,19 @@
 name: open-rush
 
 services:
+  redis:
+    image: redis:8.2.11-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   postgres:
     image: postgres:18
     environment:
@@ -26,5 +39,6 @@ services:
       - demo-pg-data:/var/lib/mysql
 
 volumes:
+  redis-data:
   postgres-data:
   demo-pg-data:

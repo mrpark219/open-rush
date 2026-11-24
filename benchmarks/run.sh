@@ -69,6 +69,9 @@ fi
 
 output_dir="$repo_dir/build/benchmark/$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S)"
 mkdir -p "$output_dir"
+if [[ "$scenario" == queue ]]; then
+  app_args+=("--queue.key-prefix=queue:{benchmark-$(basename "$output_dir")-$$}")
+fi
 existing_database="$("${compose[@]}" ps --status running -q postgres)"
 app_pid=''
 

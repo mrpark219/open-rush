@@ -4,6 +4,7 @@ import me.park.openrush.payment.application.exception.PaymentGatewayRejectedExce
 import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
 import me.park.openrush.queue.domain.QueueError
 import me.park.openrush.queue.domain.exception.QueueException
+import me.park.openrush.queue.application.exception.QueueUnavailableException
 import me.park.openrush.reservation.application.exception.ConcurrencyException
 import me.park.openrush.reservation.application.exception.PaymentAttemptConflictException
 import me.park.openrush.reservation.application.exception.ReservationIdempotencyConflictException
@@ -17,6 +18,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
+    @ExceptionHandler(QueueUnavailableException::class)
+    fun queueUnavailable(): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(ErrorResponse("QUEUE_UNAVAILABLE", "대기열에 일시적으로 연결할 수 없습니다."))
+
     @ExceptionHandler(PaymentAttemptConflictException::class, PaymentRecordConflictException::class)
     fun paymentConflict(exception: RuntimeException): ResponseEntity<ErrorResponse> =
         ResponseEntity.status(HttpStatus.CONFLICT)

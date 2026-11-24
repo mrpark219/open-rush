@@ -2,6 +2,9 @@ server:
   address: 127.0.0.1
   port: 18080
 spring:
+  data:
+    redis:
+      port: 56379
   datasource:
     url: jdbc:postgresql://localhost:55432/open_rush_benchmark
     username: benchmark
