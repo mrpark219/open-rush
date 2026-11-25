@@ -2,7 +2,9 @@ name: open-rush-benchmark
 services:
   redis:
     image: redis:8.2.11-alpine
-    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - benchmark-redis-data:/data
     ports:
       - "127.0.0.1:56379:6379"
     healthcheck:
@@ -27,4 +29,5 @@ services:
       timeout: 3s
       retries: 20
 volumes:
+  benchmark-redis-data:
   benchmark-data:

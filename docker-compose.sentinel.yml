@@ -1,0 +1,143 @@
+name: open-rush-sentinel
+
+x-redis: &redis
+  image: redis:8.2.11-alpine
+  user: redis
+  entrypoint: ["/bin/sh", "/config/start-redis.sh"]
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+x-sentinel: &sentinel
+  image: redis:8.2.11-alpine
+  user: redis
+  entrypoint: ["/bin/sh", "/config/start-sentinel.sh"]
+  depends_on:
+    redis-1:
+      condition: service_healthy
+    redis-2:
+      condition: service_healthy
+    redis-3:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL CKQUORUM open-rush | grep -q '^OK'"]
+    interval: 1s
+    timeout: 2s
+    retries: 40
+
+x-application: &application
+  image: eclipse-temurin:25-jre
+  user: "1000:1000"
+  volumes:
+    - ./build/libs/open-rush-0.0.1-SNAPSHOT.jar:/app/application.jar:ro
+  command: ["java", "-Xms128m", "-Xmx384m", "-jar", "/app/application.jar"]
+  environment:
+    SPRING_PROFILES_ACTIVE: redis-sentinel
+    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/open_rush_benchmark
+    SPRING_DATASOURCE_USERNAME: benchmark
+    SPRING_DATASOURCE_PASSWORD: benchmark
+    SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 4
+    SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 0
+    RESERVATION_EXPIRATION_ENABLED: "false"
+    QUEUE_ENABLED: "true"
+    QUEUE_KEY_PREFIX: "queue:{sentinel-test}"
+    QUEUE_MAX_IN_FLIGHT: 1
+    QUEUE_WAIT_TTL_MS: 180000
+    QUEUE_PERMIT_TTL_MS: 120000
+    QUEUE_PROCESSING_TTL_MS: 30000
+    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,metrics
+  depends_on:
+    postgres:
+      condition: service_healthy
+    sentinel-1:
+      condition: service_healthy
+    sentinel-2:
+      condition: service_healthy
+    sentinel-3:
+      condition: service_healthy
+
+services:
+  redis-1:
+    <<: *redis
+    environment:
+      REDIS_NODE_NAME: redis-1
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-redis-1:/data
+
+  redis-2:
+    <<: *redis
+    environment:
+      REDIS_NODE_NAME: redis-2
+      INITIAL_PRIMARY: redis-1
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-redis-2:/data
+
+  redis-3:
+    <<: *redis
+    environment:
+      REDIS_NODE_NAME: redis-3
+      INITIAL_PRIMARY: redis-1
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-redis-3:/data
+
+  sentinel-1:
+    <<: *sentinel
+    environment:
+      SENTINEL_NODE_NAME: sentinel-1
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-monitor-1:/data
+
+  sentinel-2:
+    <<: *sentinel
+    environment:
+      SENTINEL_NODE_NAME: sentinel-2
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-monitor-2:/data
+
+  sentinel-3:
+    <<: *sentinel
+    environment:
+      SENTINEL_NODE_NAME: sentinel-3
+    volumes:
+      - ./docker/redis-sentinel:/config:ro
+      - sentinel-monitor-3:/data
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: open_rush_benchmark
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+    volumes:
+      - sentinel-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark -d open_rush_benchmark"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  app-1:
+    <<: *application
+    ports:
+      - "127.0.0.1:18201:8080"
+
+  app-2:
+    <<: *application
+    ports:
+      - "127.0.0.1:18202:8080"
+
+volumes:
+  sentinel-redis-1:
+  sentinel-redis-2:
+  sentinel-redis-3:
+  sentinel-monitor-1:
+  sentinel-monitor-2:
+  sentinel-monitor-3:
+  sentinel-postgres:

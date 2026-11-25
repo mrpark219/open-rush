@@ -1,0 +1,8 @@
+spring:
+  data:
+    redis:
+      sentinel:
+        master: ${REDIS_SENTINEL_MASTER:open-rush}
+        nodes: ${REDIS_SENTINEL_NODES:sentinel-1:26379,sentinel-2:26379,sentinel-3:26379}
+      lettuce:
+        read-from: master

@@ -68,7 +68,7 @@ Lettuce를 사용하는 `StringRedisTemplate`으로 접근하며, Lua에서 검�
 
 대기표는 `WAITING → ADMITTED → PROCESSING`으로 전환됩니다. 대기와 미사용 입장권뿐 아니라 처리 중 점유에도 만료 기한을 두어 서버 종료 시 회수합니다. 처리 종료 시 고유 토큰으로 소유권을 확인하고 점유를 반환하며, 반환 실패는 로그로 남기고 만료 처리가 회수합니다. Redis 장애로 새 권한을 얻지 못하면 `503 QUEUE_UNAVAILABLE`을 반환합니다.
 
-키 접두사 기본값은 `queue:{reservation}`입니다. `{reservation}` 해시 태그로 관련 키를 같은 Redis Cluster 슬롯에 배치할 수 있도록 이름을 정했으며, 현재 연결 구성은 단일 Redis 서버입니다.
+키 접두사 기본값은 `queue:{reservation}`입니다. `{reservation}` 해시 태그로 관련 키를 같은 Redis Cluster 슬롯에 배치할 수 있도록 이름을 정했습니다. 기본 개발 환경은 단일 Redis이며, 아래의 `redis-sentinel` 프로필로 Sentinel 연결도 지원합니다.
 
 | 키 접미사 | 자료형 | 내용 |
 |-----------|--------|------|
@@ -83,7 +83,34 @@ Lettuce를 사용하는 `StringRedisTemplate`으로 접근하며, Lua에서 검�
 
 시간은 Redis `TIME`을 기준으로 합니다. 대기 기한은 기본 120초, 입장 허가는 10초, 처리 점유는 30초입니다. 요청과 기본 10ms 간격 주기 작업에서 만료 항목을 정리하고 다음 사용자를 입장시킵니다. Sorted Set 항목에 키 TTL을 부여하는 방식이 아니라 만료 인덱스에서 찾아 관련 상태를 함께 삭제합니다. 한 번의 실행에서 상태별 최대 `queue.cleanup-batch-size`개(기본 100개)를 정리하며, 대량 만료 시 여러 번에 걸쳐 회수하므로 잠시 수용 한도나 대기 순번이 보수적으로 표시될 수 있습니다. 입장은 한 번의 실행에 최대 한 명이며, 유휴 시간 동안 사용하지 않은 입장 횟수를 누적하지 않습니다.
 
-처리 중 점유의 만료는 실제 DB 트랜잭션을 중단하지 않습니다. `queue.processing-ttl-ms`는 정상적인 예약 처리 시간보다 충분히 크게 설정해야 하며, 좌석과 구매 한도의 정합성은 기존 DB 트랜잭션으로 보장합니다. 대기열은 전역 한 개이며 공연 회차별로 분리하지 않습니다. Redis Cluster, Sentinel과 장애 전환 시 데이터 유실까지 다루는 구성은 이번 범위에 포함하지 않습니다.
+처리 중 점유의 만료는 실제 DB 트랜잭션을 중단하지 않습니다. `queue.processing-ttl-ms`는 정상적인 예약 처리 시간보다 충분히 크게 설정해야 하며, 좌석과 구매 한도의 정합성은 기존 DB 트랜잭션으로 보장합니다. 대기열은 전역 한 개이며 공연 회차별로 분리하지 않습니다. Redis Cluster는 구성하지 않습니다.
+
+## Redis Sentinel 실행과 장애 전환
+
+```shell
+./gradlew bootJar
+docker compose -f docker-compose.sentinel.yml up -d --wait
+```
+
+독립적인 `open-rush-sentinel` Compose 프로젝트로 Redis 3개(primary 1개와 replica 2개), Sentinel 3개, PostgreSQL과 앱 2개를 실행합니다. 앱 주소는 `http://127.0.0.1:18201`, `http://127.0.0.1:18202`입니다. `http/reservation-queue.http`의 `baseUrl`을 변경해 요청할 수 있습니다. 이 환경의 DB는 개발 DB와 별개이며 데이터는 자동으로 생성하지 않습니다. 예약 요청에는 이 DB에 준비한 공연과 좌석 ID를 사용해야 합니다.
+
+`application-redis-sentinel.yaml`에서 master 이름 `open-rush`와 Sentinel 세 주소를 지정하며, `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`로 변경할 수 있습니다. 앱은 고정된 Redis 주소 대신 Sentinel에서 현재 primary를 찾아 연결합니다. 대기열은 primary에서 읽고 쓰며 Lettuce가 연결 변경을 처리합니다. Sentinel이 반환하는 내부 호스트 이름에 접근할 수 있도록 앱도 동일한 Docker 네트워크에서 실행합니다. 이 프로필의 기본 주소를 호스트에서 `bootRun`할 때 그대로 사용할 수는 없습니다.
+
+Sentinel quorum은 2이고 장애 판정 시간은 2초, failover timeout은 15초입니다. 이 값은 로컬 기능 검증용이며 실제 복구 시간 상한은 아닙니다. Redis는 AOF와 `min-replicas-to-write=1`을 사용해 정상 replica가 하나도 없으면 쓰기를 거절합니다. 이 설정도 비동기 복제로 인한 최근 쓰기 유실 가능성을 제거하지는 않습니다. 운영에서는 Redis와 Sentinel을 서로 독립적으로 장애가 발생하는 서버나 가용 영역에 배치해야 합니다. [Redis Sentinel 공식 문서](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)
+
+Redis와 Sentinel의 실행 설정 파일은 각 노드의 `/data` 볼륨에 보관합니다. 초기화 스크립트는 파일이 없을 때만 템플릿을 복사합니다. Sentinel이 변경한 primary 주소와 Redis의 `replicaof` 설정을 재시작 때 초기값으로 덮어쓰지 않습니다. 이전 primary는 복구 후 새 primary의 replica로 합류하며 자동으로 primary 역할을 되찾지 않습니다.
+
+자동 검증은 다음과 같이 실행합니다.
+
+```shell
+python3 benchmarks/run-sentinel.py
+# 장애 전환 이후 컨테이너를 남겨 확인하려면:
+python3 benchmarks/run-sentinel.py --keep
+```
+
+실행마다 별도의 Compose 프로젝트와 새 볼륨을 만듭니다. 전용 DB에 공연·좌석을 준비하고 primary를 `SIGKILL`로 강제 종료합니다. 정상 quorum 및 Sentinel 한 대 중단 조건에서 자동 승격, 두 앱의 재연결, 기존 대기표로 예약 생성, 새 쓰기, Lua 캐시 복구, 이전 primary의 replica 복귀와 설정 저장을 검증합니다. 복구 중에도 두 앱에 등록·조회 요청을 보내 HTTP 결과를 기록합니다. 테스트용 기존 대기표는 동일 연결의 `SET` 후 `WAIT 2`로 두 replica에 복제됐는지 확인한 뒤 장애를 주입합니다. 운영의 모든 쓰기에 동일한 보장을 추가한 것은 아닙니다.
+
+결과와 로그는 `build/benchmark/sentinel-<실행시각>/`에 저장하며 기본 실행은 자신이 만든 컨테이너와 볼륨을 정리합니다. `--keep` 사용 시 결과 JSON의 `project` 이름으로 해당 환경을 식별할 수 있습니다. 실행 방법과 측정 결과는 [벤치마크 안내](benchmarks/README.md)에도 정리합니다.
 
 ## 도메인과 예매 정책
 
