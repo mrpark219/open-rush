@@ -9,6 +9,7 @@ import me.park.openrush.reservation.application.provided.ReservationPaymentAppro
 import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
 import me.park.openrush.reservation.domain.ReservationPaymentTransactionType
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.domain.PaymentStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.util.*
@@ -16,6 +17,7 @@ import java.util.*
 @Service
 class ReservationPaymentTransactionsService(
     private val reservationPaymentRepository: ReservationPaymentRepositoryPort,
+    private val reservationRefundJobService: ReservationRefundJobService,
 ) : ReservationPaymentTransactionsUseCase {
     @Transactional(readOnly = true)
     override fun findPreparation(reservationId: Long, attemptNumber: UUID): PaymentPreparation? =
@@ -44,23 +46,27 @@ class ReservationPaymentTransactionsService(
                 ?.takeIf { it.reservationId == recordPaymentSuccessCommand.reservationId }
                 ?: throw IllegalArgumentException("결제의 PG 주문이 예매와 일치하지 않습니다.")
         }
+        val approvedPaymentTransaction = ReservationPaymentTransaction.approved(
+            reservationId = recordPaymentSuccessCommand.reservationId,
+            provider = recordPaymentSuccessCommand.provider,
+            paymentId = recordPaymentSuccessCommand.paymentId,
+            amount = recordPaymentSuccessCommand.amount,
+            currency = recordPaymentSuccessCommand.currency,
+            pgOrderNumber = recordPaymentSuccessCommand.pgOrderNumber,
+            status = paymentApprovalResult.status,
+            refundReason = paymentApprovalResult.refundReason,
+            preparation = paymentPreparation,
+        )
         try {
-            reservationPaymentRepository.save(
-                ReservationPaymentTransaction.approved(
-                    reservationId = recordPaymentSuccessCommand.reservationId,
-                    provider = recordPaymentSuccessCommand.provider,
-                    paymentId = recordPaymentSuccessCommand.paymentId,
-                    amount = recordPaymentSuccessCommand.amount,
-                    currency = recordPaymentSuccessCommand.currency,
-                    pgOrderNumber = recordPaymentSuccessCommand.pgOrderNumber,
-                    status = paymentApprovalResult.status,
-                    refundReason = paymentApprovalResult.refundReason,
-                    preparation = paymentPreparation,
-                )
-            )
+            reservationPaymentRepository.save(approvedPaymentTransaction)
         } catch (exception: DuplicateApprovedPaymentException) {
             throw PaymentRecordConflictException(exception)
         }
+
+        if (paymentApprovalResult.status == PaymentStatus.REFUND_REQUIRED && approvedPaymentTransaction.amount > 0) {
+            reservationRefundJobService.enqueue(approvedPaymentTransaction)
+        }
+
         return paymentApprovalResult
     }
 

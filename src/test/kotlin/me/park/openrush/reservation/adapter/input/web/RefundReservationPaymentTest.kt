@@ -72,7 +72,10 @@ class RefundReservationPaymentTest {
         demoPgStubServer.respond = {
             when {
                 it.requestMethod == "GET" -> it.reply(404, "{}")
-                it.requestURI.path.endsWith("/cancel") -> it.reply(200, canceled())
+                it.requestURI.path.endsWith("/cancel") -> {
+                    assertEquals("PENDING", refundJobStatus())
+                    it.reply(200, canceled())
+                }
                 else -> {
                     expire()
                     it.reply(200, done())
@@ -84,6 +87,7 @@ class RefundReservationPaymentTest {
         assertEquals(1, count("APPROVED"))
         assertEquals(1, count("CANCEL_PREPARED"))
         assertEquals(1, count("CANCELED"))
+        assertEquals("COMPLETED", refundJobStatus())
         confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUNDED"))
         assertEquals(3, demoPgStubServer.requests.size)
     }
@@ -119,12 +123,15 @@ class RefundReservationPaymentTest {
         refund().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
         assertEquals(1, demoPgStubServer.requests.size)
         assertEquals(0, count("CANCELED"))
+        assertEquals("PENDING", refundJobStatus())
         val first = demoPgStubServer.requests.single()
         demoPgStubServer.respond = { it.reply(200, canceled()) }
         refund().andExpect(status().isOk)
         assertTrue(first.hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCEL_PREPARED"))
         assertEquals(1, count("CANCELED"))
+        assertEquals("COMPLETED", refundJobStatus())
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_refund_jobs", Int::class.java))
     }
 
     @Test
@@ -291,6 +298,8 @@ class RefundReservationPaymentTest {
             reservationId
         )
     }
+
+    private fun refundJobStatus() = jdbcTemplate.queryForObject("SELECT status FROM reservation_refund_jobs", String::class.java)
 
     private fun count(type: String) =
         jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)

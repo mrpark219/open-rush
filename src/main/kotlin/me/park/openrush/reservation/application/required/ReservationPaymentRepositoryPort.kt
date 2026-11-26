@@ -1,6 +1,7 @@
 package me.park.openrush.reservation.application.required
 
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.domain.ReservationRefundJob
 import java.util.UUID
 
 interface ReservationPaymentRepositoryPort {
@@ -11,4 +12,7 @@ interface ReservationPaymentRepositoryPort {
     fun findCanceled(reservationId: Long, cancellationNumber: UUID): ReservationPaymentTransaction?
     fun findApproved(provider: String, paymentId: String): ReservationPaymentTransaction?
     fun save(reservationPaymentTransaction: ReservationPaymentTransaction)
+
+    fun findRefundJob(approvedPaymentTransactionId: Long): ReservationRefundJob?
+    fun saveRefundJob(reservationRefundJob: ReservationRefundJob)
 }

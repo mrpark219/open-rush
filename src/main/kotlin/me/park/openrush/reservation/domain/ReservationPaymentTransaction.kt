@@ -67,6 +67,12 @@ class ReservationPaymentTransaction private constructor(
     var recordedAt: Instant? = null
         protected set
 
+    fun refundCancellationNumber(): UUID {
+        require(type == ReservationPaymentTransactionType.APPROVED)
+
+        return UUID.nameUUIDFromBytes("refund-$provider-${requireNotNull(paymentId)}".toByteArray(Charsets.UTF_8))
+    }
+
     fun prepareCancellation(
         cancellationNumber: UUID,
         cancelAmount: Long,

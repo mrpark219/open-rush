@@ -190,7 +190,39 @@ python3 benchmarks/run-sentinel.py --keep
 
 그다음 DB 트랜잭션 밖에서 전액 환불을 한 번 시도합니다. 성공 응답은 `200 {"reservationId":1,"status":"CANCELLED","refundStatus":"REFUNDED"}`이며, PG 장애나 거절 시에는 `refundStatus: "PENDING"`을 반환합니다. 환불 실패에도 예약과 자원 반환은 되돌리지 않습니다. 같은 사유로 취소를 재요청하면 자원을 다시 반환하지 않고 미완료 환불만 같은 멱등 키로 재시도합니다. 사유를 변경한 재요청은 충돌로 거절합니다. 이미 확정된 무료 예약은 PG 호출 없이 취소하며 `refundStatus`는 null입니다. 무료 예약의 공개 확정 흐름은 아직 별도 구현 대상입니다.
 
-V9는 확정 예약 취소 후에도 최초 `confirmed_at`을 보존하도록 제약을 변경합니다. 취소된 예약의 승인 재요청은 거절합니다. Outbox, 큐, 자동 환불 재처리는 아직 연결하지 않았으므로 프로세스 종료나 실패 후에는 동일 취소 요청을 재전송해야 합니다.
+V9는 확정 예약 취소 후에도 최초 `confirmed_at`을 보존하도록 제약을 변경합니다. 취소된 예약의 승인 재요청은 거절합니다. 환불 작업은 아래 테이블에 저장하지만 자동 실행기는 아직 연결하지 않았으므로 실패 후 즉시 다시 처리하려면 동일 취소 요청을 재전송해야 합니다.
+
+### 환불 작업 저장
+
+`reservation_refund_jobs`는 전액 환불할 승인 이력과 작업 상태를 저장합니다. `ReservationRefundJob`은 `reservation.domain`의 JPA 엔티티이며 기존 `ReservationPaymentRepositoryPort`와 PersistenceAdapter를 통해 저장합니다. 별도의 payment 도메인이나 환불용 Controller는 추가하지 않습니다.
+
+| 필드 | 의미 |
+|------|------|
+| `id` | 환불 작업의 DB 기본 키 |
+| `approved_payment_transaction_id` | `reservation_payment_tx`의 승인 행 참조, 승인당 작업 한 개 |
+| `status` | `PENDING` 또는 `COMPLETED` |
+| `completed_at` | 완료 시각, 대기 중이면 null |
+| `created_at`, `modified_at` | 공용 BaseEntity의 생성·수정 시각 |
+
+금액, 결제 ID, 주문 번호와 결제 시도 번호는 참조하는 승인 이력에 있고, 취소 사유와 고정 멱등 키는 기존 `CANCEL_PREPARED`에 보존합니다. 작업 테이블에 같은 요청 정보를 중복 저장하지 않습니다. 승인당 전액 환불 작업 하나라는 현재 정책을 사용하며 부분 환불 작업 모델은 추가하지 않습니다.
+
+- 확정 예약 취소: 취소 준비 이력, 환불 작업, 예약 취소, 좌석·구매 한도 반환을 같은 트랜잭션으로 커밋합니다. 작업 저장에 실패하면 취소와 반환도 롤백됩니다.
+- 예약 확정 실패 보상: 양수 금액의 `REFUND_REQUIRED` 승인 이력을 저장할 때 작업도 함께 저장합니다. 취소 준비나 PG 환불 호출 전에 프로세스가 종료돼도 할 일이 남습니다. 0원 승인에는 환불 작업을 만들지 않습니다.
+- 기존 즉시 PG 환불 호출은 유지합니다. PG 장애·거절·응답 유실 시 작업은 `PENDING`이며, 확인된 `CANCELED` 이력과 작업의 `COMPLETED` 변경은 같은 트랜잭션으로 저장합니다. 어느 한쪽 저장이 실패하면 둘 다 롤백됩니다.
+- 같은 예약 잠금과 승인 행의 고유 제약으로 중복 작업을 방지하고, 완료 요청이 반복돼도 작업을 다시 대기로 만들거나 완료 시각을 변경하지 않습니다.
+
+V10은 기존 양수 금액의 환불 필요 승인과 전액 취소 준비를 작업으로 이전합니다. 대응하는 전액 취소 완료 이력이 있으면 완료 상태로 옮기며 기존 거래 행은 수정하지 않습니다. 과거 승인에 PG 결제 시도 정보가 없는 경우에도 환불 의무 자체는 작업으로 보존합니다. 실제 자동 실행 시에는 PG 요청에 필요한 정보의 유효성 확인이 필요합니다.
+
+이번 단계는 저장과 완료 기록까지입니다. 작업 조회·점유, 스케줄러, 재시도 횟수·다음 실행 시각·실패 분류, Resilience4j와 Kafka/Outbox 발행은 후속 작업입니다. 미처리 작업은 다음 쿼리로 확인할 수 있습니다.
+
+```sql
+SELECT job.id, job.status, job.created_at,
+       payment.reservation_id, payment.attempt_number, payment.provider, payment.payment_id
+FROM reservation_refund_jobs job
+JOIN reservation_payment_tx payment ON payment.id = job.approved_payment_transaction_id
+WHERE job.status = 'PENDING'
+ORDER BY job.id;
+```
 
 ### Demo PG HTTP 클라이언트
 

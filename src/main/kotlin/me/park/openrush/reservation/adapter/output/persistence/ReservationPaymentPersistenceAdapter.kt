@@ -1,9 +1,11 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
 import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationPaymentRepository
+import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationRefundJobRepository
 import me.park.openrush.reservation.application.exception.DuplicateApprovedPaymentException
 import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.domain.ReservationRefundJob
 import org.hibernate.exception.ConstraintViolationException
 import org.springframework.stereotype.Repository
 import java.util.*
@@ -11,7 +13,15 @@ import java.util.*
 @Repository
 class ReservationPaymentPersistenceAdapter(
     private val reservationPaymentRepository: ReservationPaymentRepository,
+    private val reservationRefundJobRepository: ReservationRefundJobRepository,
 ) : ReservationPaymentRepositoryPort {
+    override fun findRefundJob(approvedPaymentTransactionId: Long): ReservationRefundJob? =
+        reservationRefundJobRepository.findByApprovedPaymentTransactionId(approvedPaymentTransactionId)
+
+    override fun saveRefundJob(reservationRefundJob: ReservationRefundJob) {
+        reservationRefundJobRepository.save(reservationRefundJob)
+    }
+
     override fun findConfirmedPayment(reservationId: Long): ReservationPaymentTransaction? =
         reservationPaymentRepository.findConfirmedPayment(reservationId)
 

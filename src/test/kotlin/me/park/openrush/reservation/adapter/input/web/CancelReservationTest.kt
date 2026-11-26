@@ -83,12 +83,14 @@ class CancelReservationTest {
             assertEquals("AVAILABLE", seatStatus())
             assertEquals(0, allocatedQuantity())
             assertEquals(1, count("CANCEL_PREPARED"))
+            assertEquals("PENDING", refundJobStatus())
             it.reply(200, canceled())
         }
         cancel().andExpect(status().isOk)
             .andExpect(jsonPath("$.status").value("CANCELLED"))
             .andExpect(jsonPath("$.refundStatus").value("REFUNDED"))
         assertEquals(1, count("CANCELED"))
+        assertEquals("COMPLETED", refundJobStatus())
         assertTrue(jdbcTemplate.queryForObject("SELECT confirmed_at IS NOT NULL FROM reservations WHERE id = ?", Boolean::class.java, reservationId)!!)
         val performanceId = jdbcTemplate.queryForObject("SELECT performance_id FROM reservations WHERE id = ?", Long::class.java, reservationId)!!
         val seatId = jdbcTemplate.queryForObject("SELECT id FROM performance_seats", Long::class.java)!!
@@ -109,12 +111,16 @@ class CancelReservationTest {
         assertEquals("AVAILABLE", seatStatus())
         assertEquals(0, allocatedQuantity())
         assertEquals(0, count("CANCELED"))
+        assertEquals("PENDING", refundJobStatus())
+        val refundJobId = jdbcTemplate.queryForObject("SELECT id FROM reservation_refund_jobs", Long::class.java)
         val firstRequest = demoPgStubServer.requests.single()
         demoPgStubServer.respond = { it.reply(200, canceled()) }
         cancel().andExpect(status().isOk).andExpect(jsonPath("$.refundStatus").value("REFUNDED"))
         assertTrue(firstRequest.hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCEL_PREPARED"))
         assertEquals(1, count("CANCELED"))
+        assertEquals("COMPLETED", refundJobStatus())
+        assertEquals(refundJobId, jdbcTemplate.queryForObject("SELECT id FROM reservation_refund_jobs", Long::class.java))
     }
 
     @Test
@@ -237,6 +243,7 @@ class CancelReservationTest {
             .andExpect(jsonPath("$.refundStatus").doesNotExist())
         assertEquals("AVAILABLE", jdbcTemplate.queryForObject("SELECT status FROM performance_seats WHERE id = ?", String::class.java, freeSeatId))
         assertEquals(0, jdbcTemplate.queryForObject("SELECT allocated_quantity FROM concert_purchase_quotas WHERE user_id = 2", Int::class.java))
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_refund_jobs", Int::class.java))
         assertTrue(demoPgStubServer.requests.isEmpty())
         assertEquals(0, count("CANCEL_PREPARED"))
     }
@@ -282,6 +289,8 @@ class CancelReservationTest {
             reservationId
         )
     }
+
+    private fun refundJobStatus() = jdbcTemplate.queryForObject("SELECT status FROM reservation_refund_jobs", String::class.java)
 
     private fun count(type: String) =
         jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)

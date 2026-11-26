@@ -18,6 +18,7 @@ import java.util.UUID
 class CancelReservationTransactions(
     private val reservationRepository: ReservationRepositoryPort,
     private val reservationPaymentRepository: ReservationPaymentRepositoryPort,
+    private val reservationRefundJobService: ReservationRefundJobService,
     private val getPerformanceUseCase: GetPerformanceUseCase,
     private val releasePurchaseQuotaUseCase: ReleasePurchaseQuotaUseCase,
     private val releaseReservedSeatsUseCase: ReleaseReservedSeatsUseCase,
@@ -36,9 +37,7 @@ class CancelReservationTransactions(
         val attemptNumber = if (reservation.totalAmount > 0) {
             val approvedPaymentTransaction = reservationPaymentRepository.findConfirmedPayment(cancelReservationCommand.reservationId)
                 ?: throw PaymentRecordConflictException()
-            val cancellationNumber = UUID.nameUUIDFromBytes(
-                "refund-${approvedPaymentTransaction.provider}-${approvedPaymentTransaction.paymentId}".toByteArray(Charsets.UTF_8),
-            )
+            val cancellationNumber = approvedPaymentTransaction.refundCancellationNumber()
             val cancellationPreparation = reservationPaymentRepository.findCancellationPreparation(
                 cancelReservationCommand.reservationId, cancellationNumber,
             )
@@ -47,7 +46,10 @@ class CancelReservationTransactions(
                     throw PaymentRecordConflictException()
                 }
             } else {
-                if (alreadyCanceled) throw PaymentRecordConflictException()
+                if (alreadyCanceled) {
+                    throw PaymentRecordConflictException()
+                }
+
                 reservationPaymentRepository.save(
                     approvedPaymentTransaction.prepareCancellation(
                         cancellationNumber = cancellationNumber,
@@ -56,8 +58,13 @@ class CancelReservationTransactions(
                     ),
                 )
             }
+
+            reservationRefundJobService.enqueue(approvedPaymentTransaction)
+
             requireNotNull(approvedPaymentTransaction.attemptNumber)
-        } else null
+        } else {
+            null
+        }
 
         if (!alreadyCanceled) {
             reservation.cancelConfirmed(cancelReservationCommand.userId)
@@ -68,6 +75,7 @@ class CancelReservationTransactions(
                 requireNotNull(reservation.id), reservation.items.map { reservationItem -> reservationItem.seatId },
             )
         }
+
         return attemptNumber
     }
 }
