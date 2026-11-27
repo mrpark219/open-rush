@@ -8,8 +8,9 @@ import me.park.openrush.reservation.application.provided.PrepareReservationPayme
 import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
 import me.park.openrush.reservation.application.provided.RecordPaymentSuccessUseCase
 import me.park.openrush.reservation.application.provided.RefundReservationPaymentCommand
+import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
 import me.park.openrush.reservation.domain.PaymentStatus
-import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.domain.RefundJobFailure
 import me.park.openrush.support.database.DatabaseIntegrationTest
 import me.park.openrush.support.database.prepareConcurrentConnections
 import me.park.openrush.support.fixture.ConcertFixture
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CyclicBarrier
@@ -27,6 +29,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @DatabaseIntegrationTest
@@ -47,7 +50,16 @@ class ReservationRefundJobStorageTest {
     private lateinit var reservationPaymentRefundTransactions: ReservationPaymentRefundTransactions
 
     @Autowired
+    private lateinit var reservationRefundJobTransactions: ReservationRefundJobTransactions
+
+    @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
+
+    @Autowired
+    private lateinit var reservationPaymentRepository: ReservationPaymentRepositoryPort
+
+    @Autowired
+    private lateinit var transactionTemplate: TransactionTemplate
 
     private var reservationId = 0L
     private lateinit var attemptNumber: UUID
@@ -181,14 +193,15 @@ class ReservationRefundJobStorageTest {
 
     @Test
     fun `환불 완료 이력과 작업 완료를 함께 저장하고 중복 결과는 완료 시각을 유지한다`() {
-        val cancellationPreparation = prepareCancellation()
+        val cancellationPreparation = prepareCancellation().cancellationPreparation
+        val claim = assertNotNull(reservationRefundJobTransactions.claimNext())
 
-        reservationPaymentRefundTransactions.record(cancellationPreparation, "CANCEL-REFUND-JOB")
+        reservationPaymentRefundTransactions.record(claim, cancellationPreparation, "CANCEL-REFUND-JOB")
         val completedAt = completedAt()
         assertNotNull(completedAt)
         assertEquals("COMPLETED", jobStatus())
 
-        reservationPaymentRefundTransactions.record(cancellationPreparation, "CANCEL-REFUND-JOB")
+        assertNull(reservationPaymentRefundTransactions.record(claim, cancellationPreparation, "CANCEL-REFUND-JOB"))
 
         assertEquals(1, jobCount())
         assertEquals(1, transactionCount("CANCELED"))
@@ -197,11 +210,12 @@ class ReservationRefundJobStorageTest {
 
     @Test
     fun `작업 완료 저장이 실패하면 취소 완료 이력도 롤백하고 대기 작업을 유지한다`() {
-        val cancellationPreparation = prepareCancellation()
+        val cancellationPreparation = prepareCancellation().cancellationPreparation
+        val claim = assertNotNull(reservationRefundJobTransactions.claimNext())
 
         withJobWriteFailure("UPDATE") {
             assertFailsWith<DataIntegrityViolationException> {
-                reservationPaymentRefundTransactions.record(cancellationPreparation, "CANCEL-REFUND-JOB")
+                reservationPaymentRefundTransactions.record(claim, cancellationPreparation, "CANCEL-REFUND-JOB")
             }
         }
 
@@ -209,12 +223,52 @@ class ReservationRefundJobStorageTest {
         assertEquals(0, transactionCount("CANCELED"))
         assertEquals("PENDING", jobStatus())
 
-        reservationPaymentRefundTransactions.record(cancellationPreparation, "CANCEL-REFUND-JOB")
+        reservationPaymentRefundTransactions.record(claim, cancellationPreparation, "CANCEL-REFUND-JOB")
         assertEquals(1, transactionCount("CANCELED"))
         assertEquals("COMPLETED", jobStatus())
     }
 
-    private fun prepareCancellation(): ReservationPaymentTransaction {
+    @Test
+    fun `점유가 만료되면 다시 가져오고 이전 점유의 완료와 실패 기록은 무시한다`() {
+        val cancellationPreparation = prepareCancellation().cancellationPreparation
+        val firstClaim = assertNotNull(reservationRefundJobTransactions.claimNext())
+        assertNull(reservationRefundJobTransactions.claimNext())
+        jdbcTemplate.update("UPDATE reservation_refund_jobs SET lease_expires_at = now() - interval '1 second'")
+
+        val recoveredClaim = assertNotNull(reservationRefundJobTransactions.claimNext())
+        assertEquals(firstClaim.jobId, recoveredClaim.jobId)
+        assertTrue(firstClaim.token != recoveredClaim.token)
+        reservationRefundJobTransactions.fail(firstClaim, RefundJobFailure.PG_REJECTED)
+        assertNull(reservationPaymentRefundTransactions.record(firstClaim, cancellationPreparation, "STALE"))
+        assertEquals("PENDING", jobStatus())
+        assertEquals(0, transactionCount("CANCELED"))
+
+        assertNotNull(reservationPaymentRefundTransactions.record(recoveredClaim, cancellationPreparation, "CANCEL-REFUND-JOB"))
+        assertEquals("COMPLETED", jobStatus())
+        assertEquals(1, transactionCount("CANCELED"))
+    }
+
+    @Test
+    fun `점유 쿼리는 잠긴 첫 작업을 기다리지 않고 다음 작업을 가져온다`() {
+        expireReservation()
+        recordPaymentSuccessUseCase.record(paymentCommand)
+        recordPaymentSuccessUseCase.record(paymentCommand.copy(paymentId = "PK-NEXT-REFUND-JOB", pgOrderNumber = null))
+        val jobIds = jdbcTemplate.query("SELECT id FROM reservation_refund_jobs ORDER BY id") { resultSet, _ ->
+            resultSet.getLong("id")
+        }
+        val (firstJobId, secondJobId) = jobIds
+
+        transactionTemplate.executeWithoutResult {
+            val lockedJob = assertNotNull(reservationPaymentRepository.lockRefundJob(firstJobId))
+
+            assertNull(reservationRefundJobTransactions.claimPayment(lockedJob.approvedPaymentTransactionId))
+            assertEquals(secondJobId, reservationRefundJobTransactions.claimNext()?.jobId)
+        }
+
+        assertEquals(firstJobId, reservationRefundJobTransactions.claimNext()?.jobId)
+    }
+
+    private fun prepareCancellation(): PreparedReservationRefund {
         recordPaymentSuccessUseCase.record(paymentCommand)
         cancelReservationTransactions.cancel(cancelCommand())
 

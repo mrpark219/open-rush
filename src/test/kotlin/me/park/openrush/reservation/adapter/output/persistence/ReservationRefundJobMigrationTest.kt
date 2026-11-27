@@ -83,6 +83,8 @@ class ReservationRefundJobMigrationTest {
             approval("PK-NORMAL", refundRequired = false)
             approval("PK-ZERO", amount = 0)
 
+            Flyway.configure().dataSource(postgres.jdbcUrl, postgres.username, postgres.password)
+                .target("10").load().migrate()
             Flyway.configure().dataSource(postgres.jdbcUrl, postgres.username, postgres.password).load().migrate()
 
             val jobs = jdbcTemplate.queryForList(
@@ -95,6 +97,14 @@ class ReservationRefundJobMigrationTest {
             ), jobs)
             assertEquals(1, jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM reservation_refund_jobs WHERE status = 'COMPLETED' AND completed_at IS NOT NULL",
+                Int::class.java,
+            ))
+            assertEquals(2, jdbcTemplate.queryForObject(
+                """
+                SELECT count(*) FROM reservation_refund_jobs
+                WHERE status = 'PENDING' AND next_attempt_at <= now()
+                  AND lease_token IS NULL AND failure_count = 0
+                """.trimIndent(),
                 Int::class.java,
             ))
         }

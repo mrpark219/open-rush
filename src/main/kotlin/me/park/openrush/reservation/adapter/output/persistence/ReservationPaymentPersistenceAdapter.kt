@@ -8,6 +8,7 @@ import me.park.openrush.reservation.domain.ReservationPaymentTransaction
 import me.park.openrush.reservation.domain.ReservationRefundJob
 import org.hibernate.exception.ConstraintViolationException
 import org.springframework.stereotype.Repository
+import java.time.Instant
 import java.util.*
 
 @Repository
@@ -18,9 +19,21 @@ class ReservationPaymentPersistenceAdapter(
     override fun findRefundJob(approvedPaymentTransactionId: Long): ReservationRefundJob? =
         reservationRefundJobRepository.findByApprovedPaymentTransactionId(approvedPaymentTransactionId)
 
+    override fun lockNextDueRefundJob(now: Instant): ReservationRefundJob? =
+        reservationRefundJobRepository.lockNextDue(now)
+
+    override fun lockDueRefundJob(approvedPaymentTransactionId: Long, now: Instant): ReservationRefundJob? =
+        reservationRefundJobRepository.lockDue(approvedPaymentTransactionId, now)
+
+    override fun lockRefundJob(refundJobId: Long): ReservationRefundJob? =
+        reservationRefundJobRepository.lockById(refundJobId)
+
     override fun saveRefundJob(reservationRefundJob: ReservationRefundJob) {
         reservationRefundJobRepository.save(reservationRefundJob)
     }
+
+    override fun findPaymentTransaction(paymentTransactionId: Long): ReservationPaymentTransaction? =
+        reservationPaymentRepository.findById(paymentTransactionId).orElse(null)
 
     override fun findConfirmedPayment(reservationId: Long): ReservationPaymentTransaction? =
         reservationPaymentRepository.findConfirmedPayment(reservationId)

@@ -6,12 +6,19 @@ import me.park.openrush.support.fixture.ConcertFixture
 import me.park.openrush.support.fixture.InventoryFixture
 import me.park.openrush.support.pg.DemoPgStubServer
 import me.park.openrush.support.pg.reply
+import me.park.openrush.reservation.application.provided.ApproveReservationPaymentCommand
+import me.park.openrush.reservation.application.provided.PrepareReservationPaymentTxUseCase
+import me.park.openrush.reservation.application.provided.ProcessReservationRefundJobsUseCase
+import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
+import me.park.openrush.reservation.application.provided.RecordPaymentSuccessUseCase
 import me.park.openrush.reservation.application.provided.CreateReservationCommand
 import me.park.openrush.reservation.application.provided.CreateReservationUseCase
 import me.park.openrush.support.web.GlobalExceptionHandler
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
@@ -43,6 +50,15 @@ class RefundReservationPaymentTest {
 
     @Autowired
     private lateinit var createReservationUseCase: CreateReservationUseCase
+
+    @Autowired
+    private lateinit var prepareReservationPaymentTxUseCase: PrepareReservationPaymentTxUseCase
+
+    @Autowired
+    private lateinit var recordPaymentSuccessUseCase: RecordPaymentSuccessUseCase
+
+    @Autowired
+    private lateinit var processReservationRefundJobsUseCase: ProcessReservationRefundJobsUseCase
 
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
@@ -126,7 +142,8 @@ class RefundReservationPaymentTest {
         assertEquals("PENDING", refundJobStatus())
         val first = demoPgStubServer.requests.single()
         demoPgStubServer.respond = { it.reply(200, canceled()) }
-        refund().andExpect(status().isOk)
+        makeRefundDue()
+        processReservationRefundJobsUseCase.processDueRefunds()
         assertTrue(first.hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCEL_PREPARED"))
         assertEquals(1, count("CANCELED"))
@@ -149,7 +166,8 @@ class RefundReservationPaymentTest {
         }
         val first = demoPgStubServer.requests.single()
         demoPgStubServer.respond = { it.reply(200, canceled()) }
-        refund().andExpect(status().isOk)
+        makeRefundDue()
+        processReservationRefundJobsUseCase.processDueRefunds()
         assertTrue(first.hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCELED"))
     }
@@ -163,8 +181,9 @@ class RefundReservationPaymentTest {
         assertEquals(0, count("CANCELED"))
     }
 
-    @Test
-    fun `환불 응답의 결제나 취소 정보가 다르면 완료로 기록하지 않는다`() {
+    @ParameterizedTest
+    @ValueSource(ints = [0, 1, 2, 3, 4, 5, 6])
+    fun `환불 응답의 결제나 취소 정보가 다르면 완료로 기록하지 않는다`(invalidResponseIndex: Int) {
         prepareRefund()
         val invalid = listOf(
             canceled().replace("PK-TEST", "OTHER-KEY"),
@@ -175,10 +194,9 @@ class RefundReservationPaymentTest {
             canceled().replace("RESERVATION_UNAVAILABLE", "OTHER-REASON"),
             canceled().replace("\"cancelStatus\":\"DONE\"", "\"cancelStatus\":\"FAILED\""),
         )
-        invalid.forEach { body ->
-            demoPgStubServer.respond = { it.reply(200, body) }
-            refund().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
-        }
+        demoPgStubServer.respond = { it.reply(200, invalid[invalidResponseIndex]) }
+        refund().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
+        assertEquals(1, demoPgStubServer.requests.size)
         assertEquals(0, count("CANCELED"))
     }
 
@@ -227,37 +245,83 @@ class RefundReservationPaymentTest {
             jdbcTemplate.execute("DROP TRIGGER reject_test_refund ON reservation_payment_tx")
             jdbcTemplate.execute("DROP FUNCTION reject_test_refund()")
         }
+        makeRefundDue()
         refund().andExpect(status().isOk)
         assertTrue(demoPgStubServer.requests.first().hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCELED"))
     }
 
     @Test
-    fun `동시 환불은 같은 멱등 키를 사용하고 완료는 한 행만 기록한다`() {
+    fun `두 스케줄러가 동시에 실행되어도 환불을 한 번만 호출한다`() {
         prepareRefund()
-        val callers = Executors.newFixedThreadPool(2)
-        val posts = CountDownLatch(2)
+        val caller = Executors.newSingleThreadExecutor()
+        val posted = CountDownLatch(1)
+        val release = CountDownLatch(1)
         demoPgStubServer.respond = {
-            posts.countDown()
-            assertTrue(posts.await(5, TimeUnit.SECONDS))
+            posted.countDown()
+            assertTrue(release.await(5, TimeUnit.SECONDS))
             it.reply(200, canceled())
         }
         try {
-            val results = List(2) { callers.submit<Int> { refund().andReturn().response.status } }
-            assertEquals(listOf(200, 200), results.map { it.get(10, TimeUnit.SECONDS) })
-            assertTrue(demoPgStubServer.requests.isNotEmpty())
-            assertTrue(demoPgStubServer.requests.all { it.hasSameContentAs(demoPgStubServer.requests.first()) })
+            val first = caller.submit { processReservationRefundJobsUseCase.processDueRefunds() }
+            assertTrue(posted.await(5, TimeUnit.SECONDS))
+            processReservationRefundJobsUseCase.processDueRefunds()
+            assertEquals(1, demoPgStubServer.requests.size)
+
+            release.countDown()
+            first.get(10, TimeUnit.SECONDS)
             assertEquals(1, count("CANCEL_PREPARED"))
             assertEquals(1, count("CANCELED"))
         } finally {
-            callers.shutdownNow()
+            release.countDown()
+            caller.shutdownNow()
         }
     }
 
+    @Test
+    fun `일시 실패가 다섯 번 누적되면 같은 요청을 더 보내지 않고 수동 확인 대상으로 남긴다`() {
+        prepareRefund()
+        demoPgStubServer.respond = { it.reply(503, "{}") }
+
+        repeat(5) {
+            makeRefundDue()
+            processReservationRefundJobsUseCase.processDueRefunds()
+        }
+        makeRefundDue()
+        processReservationRefundJobsUseCase.processDueRefunds()
+
+        assertEquals("NEEDS_REVIEW", refundJobStatus())
+        assertEquals(5, jdbcTemplate.queryForObject("SELECT failure_count FROM reservation_refund_jobs", Int::class.java))
+        assertEquals(5, demoPgStubServer.requests.size)
+        assertTrue(demoPgStubServer.requests.all { it.hasSameContentAs(demoPgStubServer.requests.first()) })
+        assertEquals(0, count("CANCELED"))
+    }
+
+    @Test
+    fun `PG 주문 정보가 없는 과거 승인 작업은 PG 호출 없이 수동 확인 대상으로 남긴다`() {
+        expire()
+        recordPaymentSuccessUseCase.record(RecordPaymentSuccessCommand("demo-pg", "LEGACY", reservationId, 15000, "KRW"))
+
+        processReservationRefundJobsUseCase.processDueRefunds()
+
+        assertEquals("NEEDS_REVIEW", refundJobStatus())
+        assertEquals("INVALID_PAYMENT_DATA", jdbcTemplate.queryForObject("SELECT last_failure FROM reservation_refund_jobs", String::class.java))
+        assertTrue(demoPgStubServer.requests.isEmpty())
+        assertEquals(0, count("CANCELED"))
+    }
+
     private fun prepareRefund() {
-        normalResponses(beforeApproval = { expire() })
-        confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("REFUND_REQUIRED"))
-        demoPgStubServer.requests.clear()
+        val preparedPayment = prepareReservationPaymentTxUseCase.prepare(
+            ApproveReservationPaymentCommand(reservationId, 1, attemptNumber, "PK-TEST"),
+        )
+        expire()
+        recordPaymentSuccessUseCase.record(
+            RecordPaymentSuccessCommand("demo-pg", "PK-TEST", reservationId, 15000, "KRW", preparedPayment.transaction.pgOrderNumber),
+        )
+    }
+
+    private fun makeRefundDue() {
+        jdbcTemplate.update("UPDATE reservation_refund_jobs SET next_attempt_at = now() - interval '1 second'")
     }
 
     private fun refund(userId: Long = 1) = mockMvc.perform(

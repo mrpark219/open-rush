@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated
 import jakarta.persistence.Table
 import me.park.openrush.support.persistence.BaseEntity
 import java.time.Instant
+import java.util.UUID
 
 /** 전액 환불할 승인 이력을 참조한다. 거래 이력과 분리해 작업 진행 상태를 관리한다. */
 @Entity
@@ -14,6 +15,7 @@ import java.time.Instant
 class ReservationRefundJob(
     @field:Column(nullable = false, unique = true)
     val approvedPaymentTransactionId: Long,
+    nextAttemptAt: Instant,
 ) : BaseEntity() {
     @field:Enumerated(EnumType.STRING)
     @field:Column(nullable = false, length = 32)
@@ -23,8 +25,48 @@ class ReservationRefundJob(
     var completedAt: Instant? = null
         protected set
 
+    @field:Column(nullable = false)
+    var nextAttemptAt: Instant = nextAttemptAt
+        protected set
+
+    var leaseToken: UUID? = null
+        protected set
+
+    var leaseExpiresAt: Instant? = null
+        protected set
+
+    @field:Column(nullable = false)
+    var failureCount: Int = 0
+        protected set
+
+    @field:Enumerated(EnumType.STRING)
+    @field:Column(length = 32)
+    var lastFailure: RefundJobFailure? = null
+        protected set
+
     init {
         require(approvedPaymentTransactionId > 0)
+    }
+
+    fun claim(token: UUID, now: Instant, expiresAt: Instant) {
+        check(status == ReservationRefundJobStatus.PENDING)
+        check(nextAttemptAt <= now && leaseExpiresAt?.isAfter(now) != true)
+
+        leaseToken = token
+        leaseExpiresAt = expiresAt
+    }
+
+    fun fail(failure: RefundJobFailure, retryAt: Instant?) {
+        check(status == ReservationRefundJobStatus.PENDING && leaseToken != null)
+
+        failureCount++
+        lastFailure = failure
+        clearLease()
+        if (retryAt == null) {
+            status = ReservationRefundJobStatus.NEEDS_REVIEW
+        } else {
+            nextAttemptAt = retryAt
+        }
     }
 
     fun complete(completedAt: Instant) {
@@ -34,5 +76,11 @@ class ReservationRefundJob(
 
         status = ReservationRefundJobStatus.COMPLETED
         this.completedAt = completedAt
+        clearLease()
+    }
+
+    private fun clearLease() {
+        leaseToken = null
+        leaseExpiresAt = null
     }
 }

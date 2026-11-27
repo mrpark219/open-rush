@@ -1,4 +1,6 @@
 reservation:
+  refund:
+    enabled: false
   expiration:
     enabled: false
 

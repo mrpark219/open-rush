@@ -9,7 +9,7 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
 
-/** 호출자가 예약을 잠근 트랜잭션 안에서 환불 작업을 저장하고 완료한다. */
+/** 호출자가 예약을 잠근 트랜잭션 안에서 환불 작업을 등록한다. */
 @Service
 @Transactional(propagation = Propagation.MANDATORY)
 class ReservationRefundJobService(
@@ -26,7 +26,7 @@ class ReservationRefundJobService(
             return existingJob
         }
 
-        val refundJob = ReservationRefundJob(approvedPaymentTransactionId)
+        val refundJob = ReservationRefundJob(approvedPaymentTransactionId, clock.instant())
         val existingCancellation = reservationPaymentRepository.findCanceled(
             approvedPaymentTransaction.reservationId,
             approvedPaymentTransaction.refundCancellationNumber(),
@@ -38,12 +38,5 @@ class ReservationRefundJobService(
         reservationPaymentRepository.saveRefundJob(refundJob)
 
         return refundJob
-    }
-
-    fun complete(approvedPaymentTransaction: ReservationPaymentTransaction) {
-        val refundJob = enqueue(approvedPaymentTransaction)
-        refundJob.complete(clock.instant())
-
-        reservationPaymentRepository.saveRefundJob(refundJob)
     }
 }

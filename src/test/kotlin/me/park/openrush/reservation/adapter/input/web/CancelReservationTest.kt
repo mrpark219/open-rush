@@ -8,6 +8,7 @@ import me.park.openrush.support.pg.DemoPgStubServer
 import me.park.openrush.support.pg.reply
 import me.park.openrush.reservation.application.provided.CreateReservationCommand
 import me.park.openrush.reservation.application.provided.CreateReservationUseCase
+import me.park.openrush.reservation.application.provided.ProcessReservationRefundJobsUseCase
 import me.park.openrush.support.web.GlobalExceptionHandler
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeEach
@@ -42,7 +43,7 @@ class CancelReservationTest {
     private lateinit var confirmReservationUseCase: me.park.openrush.reservation.application.provided.ConfirmReservationUseCase
 
     @Autowired
-    private lateinit var refundReservationPaymentUseCase: me.park.openrush.reservation.application.provided.RefundReservationPaymentUseCase
+    private lateinit var processReservationRefundJobsUseCase: ProcessReservationRefundJobsUseCase
 
     @Autowired
     private lateinit var globalExceptionHandler: GlobalExceptionHandler
@@ -104,7 +105,7 @@ class CancelReservationTest {
     }
 
     @Test
-    fun `PG 장애에도 취소와 반환은 유지하고 같은 요청으로 환불만 다시 시도한다`() {
+    fun `PG 장애에도 취소와 반환은 유지하고 스케줄러가 환불만 재시도한다`() {
         demoPgStubServer.respond = { it.reply(503, "{}") }
         cancel().andExpect(status().isOk).andExpect(jsonPath("$.refundStatus").value("PENDING"))
         assertEquals("CANCELLED", reservationStatus())
@@ -115,7 +116,14 @@ class CancelReservationTest {
         val refundJobId = jdbcTemplate.queryForObject("SELECT id FROM reservation_refund_jobs", Long::class.java)
         val firstRequest = demoPgStubServer.requests.single()
         demoPgStubServer.respond = { it.reply(200, canceled()) }
+        processReservationRefundJobsUseCase.processDueRefunds()
+        cancel().andExpect(status().isOk).andExpect(jsonPath("$.refundStatus").value("PENDING"))
+        assertEquals(1, demoPgStubServer.requests.size)
+
+        makeRefundDue()
+        processReservationRefundJobsUseCase.processDueRefunds()
         cancel().andExpect(status().isOk).andExpect(jsonPath("$.refundStatus").value("REFUNDED"))
+        assertEquals(2, demoPgStubServer.requests.size)
         assertTrue(firstRequest.hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCEL_PREPARED"))
         assertEquals(1, count("CANCELED"))
@@ -130,6 +138,10 @@ class CancelReservationTest {
         assertEquals("CANCELLED", reservationStatus())
         assertEquals(0, allocatedQuantity())
         assertEquals(0, count("CANCELED"))
+        assertEquals("NEEDS_REVIEW", refundJobStatus())
+        makeRefundDue()
+        processReservationRefundJobsUseCase.processDueRefunds()
+        assertEquals(1, demoPgStubServer.requests.size)
     }
 
     @Test
@@ -176,30 +188,37 @@ class CancelReservationTest {
             jdbcTemplate.execute("DROP TRIGGER reject_cancel_result ON reservation_payment_tx")
             jdbcTemplate.execute("DROP FUNCTION reject_cancel_result()")
         }
+        makeRefundDue()
         cancel().andExpect(status().isOk)
         assertTrue(demoPgStubServer.requests.first().hasSameContentAs(demoPgStubServer.requests.last()))
         assertEquals(1, count("CANCELED"))
     }
 
     @Test
-    fun `동시 예약 취소도 자원은 한 번 반환하고 동일한 환불 요청을 사용한다`() {
-        val callers = Executors.newFixedThreadPool(2)
-        val posts = CountDownLatch(2)
+    fun `예약 취소 중 스케줄러와 재요청이 들어와도 PG 호출은 한 번만 한다`() {
+        val caller = Executors.newSingleThreadExecutor()
+        val posted = CountDownLatch(1)
+        val release = CountDownLatch(1)
         demoPgStubServer.respond = {
-            posts.countDown()
-            assertTrue(posts.await(5, TimeUnit.SECONDS))
+            posted.countDown()
+            assertTrue(release.await(5, TimeUnit.SECONDS))
             it.reply(200, canceled())
         }
         try {
-            val results = List(2) { callers.submit<Int> { cancel().andReturn().response.status } }
-            assertEquals(listOf(200, 200), results.map { it.get(10, TimeUnit.SECONDS) })
+            val first = caller.submit<Int> { cancel().andReturn().response.status }
+            assertTrue(posted.await(5, TimeUnit.SECONDS))
+            processReservationRefundJobsUseCase.processDueRefunds()
+            cancel().andExpect(status().isOk).andExpect(jsonPath("$.refundStatus").value("PENDING"))
+            assertEquals(1, demoPgStubServer.requests.size)
+
+            release.countDown()
+            assertEquals(200, first.get(10, TimeUnit.SECONDS))
             assertEquals(0, allocatedQuantity())
-            assertTrue(demoPgStubServer.requests.isNotEmpty())
-            assertTrue(demoPgStubServer.requests.all { it.hasSameContentAs(demoPgStubServer.requests.first()) })
             assertEquals(1, count("CANCEL_PREPARED"))
             assertEquals(1, count("CANCELED"))
         } finally {
-            callers.shutdownNow()
+            release.countDown()
+            caller.shutdownNow()
         }
     }
 
@@ -288,6 +307,10 @@ class CancelReservationTest {
             "UPDATE reservations SET held_at = now() - interval '6 minutes', expires_at = now() - interval '1 minute' WHERE id = ?",
             reservationId
         )
+    }
+
+    private fun makeRefundDue() {
+        jdbcTemplate.update("UPDATE reservation_refund_jobs SET next_attempt_at = now() - interval '1 second'")
     }
 
     private fun refundJobStatus() = jdbcTemplate.queryForObject("SELECT status FROM reservation_refund_jobs", String::class.java)
