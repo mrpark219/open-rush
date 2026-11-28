@@ -1,33 +1,44 @@
 package me.park.openrush.reservation.application
 
-import me.park.openrush.reservation.application.provided.PaymentPreparation
-import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
-import me.park.openrush.reservation.application.provided.ReservationPaymentTransactionsUseCase
 import me.park.openrush.reservation.application.exception.DuplicateApprovedPaymentException
-import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
-import me.park.openrush.reservation.application.provided.ReservationPaymentApprovalResult
+import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
+import me.park.openrush.reservation.application.provided.PaymentPreparation
 import me.park.openrush.reservation.application.provided.RecordPaymentSuccessCommand
-import me.park.openrush.reservation.domain.ReservationPaymentTransactionType
-import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.application.provided.ReservationPaymentApprovalResult
+import me.park.openrush.reservation.application.provided.ReservationPaymentTransactionsUseCase
+import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
 import me.park.openrush.reservation.domain.PaymentStatus
+import me.park.openrush.reservation.domain.ReservationPaymentTransaction
+import me.park.openrush.reservation.domain.ReservationPaymentTransactionType
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import java.util.*
+import java.time.Instant
+import java.util.UUID
 
 @Service
 class ReservationPaymentTransactionsService(
     private val reservationPaymentRepository: ReservationPaymentRepositoryPort,
     private val reservationRefundJobService: ReservationRefundJobService,
+    private val reservationApprovalRecoveryTransactions: ReservationApprovalRecoveryTransactions,
 ) : ReservationPaymentTransactionsUseCase {
     @Transactional(readOnly = true)
     override fun findPreparation(reservationId: Long, attemptNumber: UUID): PaymentPreparation? =
         reservationPaymentRepository.findByAttempt(reservationId, attemptNumber)?.toPreparation()
 
     @Transactional
-    override fun prepare(reservationId: Long, attemptNumber: UUID, amount: Long, paymentKey: String): PaymentPreparation {
+    override fun prepare(
+        reservationId: Long,
+        attemptNumber: UUID,
+        amount: Long,
+        paymentKey: String,
+        reservationExpiresAt: Instant,
+    ): PaymentPreparation {
         val paymentPreparation = ReservationPaymentTransaction.prepare(reservationId, attemptNumber, amount, paymentKey)
         reservationPaymentRepository.save(paymentPreparation)
-        return paymentPreparation.toPreparation()
+        val preparation = paymentPreparation.toPreparation()
+        reservationApprovalRecoveryTransactions.enqueue(preparation.id, reservationExpiresAt)
+
+        return preparation
     }
 
     @Transactional(readOnly = true)
@@ -67,6 +78,10 @@ class ReservationPaymentTransactionsService(
             reservationRefundJobService.enqueue(approvedPaymentTransaction)
         }
 
+        if (paymentPreparation != null) {
+            reservationApprovalRecoveryTransactions.complete(requireNotNull(paymentPreparation.id))
+        }
+
         return paymentApprovalResult
     }
 
@@ -85,15 +100,4 @@ class ReservationPaymentTransactionsService(
             refundReason = refundReason,
         )
     }
-
-    private fun ReservationPaymentTransaction.toPreparation() = PaymentPreparation(
-        id = requireNotNull(id),
-        reservationId = reservationId,
-        attemptNumber = requireNotNull(attemptNumber),
-        provider = provider,
-        amount = amount,
-        pgOrderNumber = requireNotNull(pgOrderNumber),
-        approvalIdempotencyKey = requireNotNull(approvalIdempotencyKey),
-        requestedPaymentKey = requireNotNull(requestedPaymentKey),
-    )
 }

@@ -1,4 +1,6 @@
 reservation:
+  approval-recovery:
+    enabled: false
   refund:
     enabled: false
   expiration:

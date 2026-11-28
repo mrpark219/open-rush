@@ -1,9 +1,11 @@
 package me.park.openrush.reservation.adapter.output.persistence
 
+import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationApprovalRecoveryJobRepository
 import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationPaymentRepository
 import me.park.openrush.reservation.adapter.output.persistence.repository.ReservationRefundJobRepository
 import me.park.openrush.reservation.application.exception.DuplicateApprovedPaymentException
 import me.park.openrush.reservation.application.required.ReservationPaymentRepositoryPort
+import me.park.openrush.reservation.domain.ReservationApprovalRecoveryJob
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
 import me.park.openrush.reservation.domain.ReservationRefundJob
 import org.hibernate.exception.ConstraintViolationException
@@ -15,7 +17,18 @@ import java.util.*
 class ReservationPaymentPersistenceAdapter(
     private val reservationPaymentRepository: ReservationPaymentRepository,
     private val reservationRefundJobRepository: ReservationRefundJobRepository,
+    private val reservationApprovalRecoveryJobRepository: ReservationApprovalRecoveryJobRepository,
 ) : ReservationPaymentRepositoryPort {
+    override fun saveApprovalRecoveryJob(approvalRecoveryJob: ReservationApprovalRecoveryJob) {
+        reservationApprovalRecoveryJobRepository.save(approvalRecoveryJob)
+    }
+
+    override fun lockNextDueApprovalRecoveryJob(now: Instant): ReservationApprovalRecoveryJob? =
+        reservationApprovalRecoveryJobRepository.lockNextDue(now)
+
+    override fun lockApprovalRecoveryJob(paymentPreparationId: Long): ReservationApprovalRecoveryJob? =
+        reservationApprovalRecoveryJobRepository.lockByPreparationId(paymentPreparationId)
+
     override fun findRefundJob(approvedPaymentTransactionId: Long): ReservationRefundJob? =
         reservationRefundJobRepository.findByApprovedPaymentTransactionId(approvedPaymentTransactionId)
 

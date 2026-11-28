@@ -1,5 +1,6 @@
 package me.park.openrush.reservation.application.required
 
+import me.park.openrush.reservation.domain.ReservationApprovalRecoveryJob
 import me.park.openrush.reservation.domain.ReservationPaymentTransaction
 import me.park.openrush.reservation.domain.ReservationRefundJob
 import java.time.Instant
@@ -20,4 +21,8 @@ interface ReservationPaymentRepositoryPort {
     fun lockDueRefundJob(approvedPaymentTransactionId: Long, now: Instant): ReservationRefundJob?
     fun lockRefundJob(refundJobId: Long): ReservationRefundJob?
     fun saveRefundJob(reservationRefundJob: ReservationRefundJob)
+
+    fun saveApprovalRecoveryJob(approvalRecoveryJob: ReservationApprovalRecoveryJob)
+    fun lockNextDueApprovalRecoveryJob(now: Instant): ReservationApprovalRecoveryJob?
+    fun lockApprovalRecoveryJob(paymentPreparationId: Long): ReservationApprovalRecoveryJob?
 }

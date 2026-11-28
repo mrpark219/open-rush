@@ -17,4 +17,9 @@ class SchedulingConfiguration {
     fun reservationRefundTaskScheduler() = ThreadPoolTaskScheduler().apply {
         setThreadNamePrefix("reservation-refund-")
     }
+
+    @Bean
+    fun reservationApprovalRecoveryTaskScheduler() = ThreadPoolTaskScheduler().apply {
+        setThreadNamePrefix("reservation-approval-recovery-")
+    }
 }

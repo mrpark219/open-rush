@@ -33,6 +33,10 @@ spring:
             read-timeout: 700
             follow-redirects: false
 reservation:
+  approval-recovery:
+    enabled: true
+    fixed-delay: 1s
+    initial-delay: 1s
   refund:
     enabled: true
     fixed-delay: 1s

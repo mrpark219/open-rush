@@ -1,6 +1,9 @@
 package me.park.openrush.reservation.adapter.input.web
 
 import jakarta.servlet.ServletException
+import me.park.openrush.reservation.application.ReservationApprovalRecoveryTransactions
+import me.park.openrush.reservation.application.provided.ProcessReservationRefundJobsUseCase
+import me.park.openrush.reservation.application.provided.RecoverReservationPaymentApprovalsUseCase
 import me.park.openrush.support.database.DatabaseIntegrationTest
 import me.park.openrush.support.fixture.ConcertFixture
 import me.park.openrush.support.fixture.InventoryFixture
@@ -32,6 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @DatabaseIntegrationTest
@@ -50,6 +55,16 @@ class ApproveReservationPaymentTest {
 
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
+
+    @Autowired
+    private lateinit var recoverReservationPaymentApprovalsUseCase: RecoverReservationPaymentApprovalsUseCase
+
+    @Autowired
+    private lateinit var processReservationRefundJobsUseCase: ProcessReservationRefundJobsUseCase
+
+    @Autowired
+    private lateinit var reservationApprovalRecoveryTransactions: ReservationApprovalRecoveryTransactions
+
     private lateinit var mockMvc: MockMvc
     private var reservationId = 0L
     private lateinit var attemptNumber: UUID
@@ -82,6 +97,7 @@ class ApproveReservationPaymentTest {
                     reservationId
                 )
                 assertEquals(1, count("APPROVAL_PREPARED"))
+                assertEquals("PENDING", recoveryStatus())
                 committedAndUnlocked = true
             }
         })
@@ -89,6 +105,7 @@ class ApproveReservationPaymentTest {
             .andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
             .andExpect(jsonPath("$.paymentKey").value("PK-TEST"))
         assertTrue(committedAndUnlocked)
+        assertEquals("COMPLETED", recoveryStatus())
         assertEquals("CONFIRMED", reservationStatus())
         assertEquals(1, count("APPROVED"))
         assertEquals(listOf("GET", "POST"), demoPgStubServer.requests.map { it.method })
@@ -194,7 +211,7 @@ class ApproveReservationPaymentTest {
     }
 
     @Test
-    fun `PG 승인 후 DB 저장이 롤백되어도 재요청의 주문 조회로 복구한다`() {
+    fun `PG 승인 후 DB 저장이 롤백되어도 스케줄러의 주문 조회로 복구한다`() {
         val approved = AtomicBoolean(false)
         demoPgStubServer.respond = {
             if (it.requestMethod == "POST") {
@@ -216,14 +233,120 @@ class ApproveReservationPaymentTest {
         try {
             assertFailsWith<ServletException> { confirm() }
             assertEquals("HELD", reservationStatus())
+            assertEquals("PENDING", recoveryStatus())
             assertEquals(1, count("APPROVAL_PREPARED"))
             assertEquals(0, count("APPROVED"))
         } finally {
             jdbcTemplate.execute("DROP TRIGGER reject_test_approval ON reservation_payment_tx")
             jdbcTemplate.execute("DROP FUNCTION reject_test_approval()")
         }
-        confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
+
+        makeRecoveryDue()
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals("CONFIRMED", reservationStatus())
+        assertEquals("COMPLETED", recoveryStatus())
         assertEquals(listOf("GET", "POST", "GET"), demoPgStubServer.requests.map { it.method })
+        assertEquals(1, count("APPROVED"))
+        confirm().andExpect(status().isOk).andExpect(jsonPath("$.status").value("RESERVATION_CONFIRMED"))
+        assertEquals(3, demoPgStubServer.requests.size)
+    }
+
+    @Test
+    fun `승인 응답이 유실되고 예약이 만료되면 자동 복구 뒤 환불 작업으로 처리한다`() {
+        val approved = AtomicBoolean(false)
+        demoPgStubServer.respond = { exchange ->
+            if (exchange.requestMethod == "POST") {
+                approved.set(true)
+                exchange.close()
+            } else if (approved.get()) {
+                exchange.reply(503, "{}")
+            } else {
+                exchange.reply(404, "{}")
+            }
+        }
+        confirm().andExpect(status().isAccepted)
+        assertTrue(approved.get())
+        expire()
+
+        demoPgStubServer.respond = { exchange ->
+            assertEquals("GET", exchange.requestMethod)
+            assertEquals("/v1/payments/orders/$orderId", exchange.requestURI.path)
+            exchange.reply(200, done())
+        }
+        demoPgStubServer.requests.clear()
+        makeRecoveryDue()
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+
+        assertEquals("COMPLETED", recoveryStatus())
+        assertEquals("REFUND_REQUIRED", jdbcTemplate.queryForObject(
+            "SELECT status FROM reservation_payment_tx WHERE type = 'APPROVED'", String::class.java,
+        ))
+        assertEquals("PENDING", jdbcTemplate.queryForObject("SELECT status FROM reservation_refund_jobs", String::class.java))
+        assertEquals(listOf("GET"), demoPgStubServer.requests.map { it.method })
+
+        demoPgStubServer.respond = { exchange ->
+            assertEquals("/v1/payments/PK-TEST/cancel", exchange.requestURI.path)
+            exchange.reply(200, """
+                {"paymentKey":"PK-TEST","orderId":"$orderId","currency":"KRW","totalAmount":15000,
+                 "balanceAmount":0,"status":"CANCELED","cancels":[{"transactionKey":"CANCEL-RECOVERY",
+                 "cancelAmount":15000,"cancelReason":"RESERVATION_UNAVAILABLE","cancelStatus":"DONE"}]}
+            """.trimIndent())
+        }
+        processReservationRefundJobsUseCase.processDueRefunds()
+        assertEquals("COMPLETED", jdbcTemplate.queryForObject("SELECT status FROM reservation_refund_jobs", String::class.java))
+        assertEquals(1, count("CANCELED"))
+    }
+
+    @Test
+    fun `404는 유예기간 중 재조회하고 유예기간 뒤에도 PG 장애와 구분한다`() {
+        demoPgStubServer.respond = { it.reply(503, "{}") }
+        confirm().andExpect(status().isAccepted)
+        demoPgStubServer.requests.clear()
+
+        demoPgStubServer.respond = { it.reply(404, "{}") }
+        makeRecoveryDue()
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals("PENDING", recoveryStatus())
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals(1, demoPgStubServer.requests.size)
+
+        jdbcTemplate.update("UPDATE reservation_approval_recovery_jobs SET lookup_until = now() - interval '1 second'")
+        demoPgStubServer.respond = { it.reply(503, "{}") }
+        makeRecoveryDue()
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals("PENDING", recoveryStatus())
+        assertEquals("PG_UNAVAILABLE", jdbcTemplate.queryForObject(
+            "SELECT last_failure FROM reservation_approval_recovery_jobs", String::class.java,
+        ))
+
+        demoPgStubServer.respond = { it.reply(404, "{}") }
+        makeRecoveryDue()
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals("NOT_FOUND", recoveryStatus())
+        recoverReservationPaymentApprovalsUseCase.recoverDueApprovals()
+        assertEquals(listOf("GET", "GET", "GET"), demoPgStubServer.requests.map { it.method })
+        assertEquals(0, count("APPROVED"))
+    }
+
+    @Test
+    fun `다른 스케줄러는 점유 만료 뒤 조회를 이어받고 정상 승인 뒤 늦게 온 404는 무시한다`() {
+        demoPgStubServer.respond = { it.reply(503, "{}") }
+        confirm().andExpect(status().isAccepted)
+        makeRecoveryDue()
+
+        val firstClaim = assertNotNull(reservationApprovalRecoveryTransactions.claimNext())
+        assertNull(reservationApprovalRecoveryTransactions.claimNext())
+        jdbcTemplate.update("UPDATE reservation_approval_recovery_jobs SET lease_expires_at = now() - interval '1 second'")
+        val secondClaim = assertNotNull(reservationApprovalRecoveryTransactions.claimNext())
+        assertEquals(firstClaim.paymentPreparation.id, secondClaim.paymentPreparation.id)
+        assertTrue(firstClaim.token != secondClaim.token)
+        reservationApprovalRecoveryTransactions.recordNotFound(firstClaim)
+        assertNull(reservationApprovalRecoveryTransactions.claimNext())
+
+        demoPgStubServer.respond = { it.reply(200, done()) }
+        confirm().andExpect(status().isOk)
+        reservationApprovalRecoveryTransactions.recordNotFound(secondClaim)
+        assertEquals("COMPLETED", recoveryStatus())
         assertEquals(1, count("APPROVED"))
     }
 
@@ -355,6 +478,13 @@ class ApproveReservationPaymentTest {
             reservationId
         )
     }
+
+    private fun makeRecoveryDue() {
+        jdbcTemplate.update("UPDATE reservation_approval_recovery_jobs SET next_lookup_at = now() - interval '1 second'")
+    }
+
+    private fun recoveryStatus() =
+        jdbcTemplate.queryForObject("SELECT status FROM reservation_approval_recovery_jobs", String::class.java)
 
     private fun count(type: String) =
         jdbcTemplate.queryForObject("SELECT count(*) FROM reservation_payment_tx WHERE type = ?", Int::class.java, type)

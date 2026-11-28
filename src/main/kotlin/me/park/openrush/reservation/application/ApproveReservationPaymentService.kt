@@ -3,7 +3,6 @@ package me.park.openrush.reservation.application
 import me.park.openrush.payment.application.exception.PaymentGatewayUnavailableException
 import me.park.openrush.payment.application.provided.ApprovePaymentUseCase
 import me.park.openrush.payment.application.provided.ApprovedPayment
-import me.park.openrush.payment.application.provided.PaymentApprovalCommand
 import me.park.openrush.reservation.application.exception.PaymentRecordConflictException
 import me.park.openrush.reservation.application.provided.*
 import me.park.openrush.reservation.domain.PaymentStatus
@@ -36,13 +35,7 @@ class ApproveReservationPaymentService(
             return result(approveReservationPaymentCommand, existingPaymentApprovalResult)
         }
 
-        val paymentApprovalCommand = PaymentApprovalCommand(
-            provider = paymentPreparation.provider,
-            orderNumber = paymentPreparation.pgOrderNumber,
-            paymentKey = paymentPreparation.requestedPaymentKey,
-            amount = paymentPreparation.amount,
-            idempotencyKey = paymentPreparation.approvalIdempotencyKey,
-        )
+        val paymentApprovalCommand = paymentPreparation.toPaymentApprovalCommand()
         val approvedPayment: ApprovedPayment? = try {
             approvePaymentUseCase.findByOrder(paymentApprovalCommand) ?: if (preparedReservationPayment.approvalAllowed) {
                 try {
@@ -56,16 +49,7 @@ class ApproveReservationPaymentService(
             null
         }
         val paymentApprovalResult = approvedPayment?.let {
-            recordPaymentSuccessUseCase.record(
-                RecordPaymentSuccessCommand(
-                    provider = it.provider,
-                    paymentId = it.paymentKey,
-                    reservationId = approveReservationPaymentCommand.reservationId,
-                    amount = it.amount,
-                    currency = it.currency,
-                    pgOrderNumber = it.orderNumber,
-                )
-            )
+            recordPaymentSuccessUseCase.record(it.toRecordPaymentSuccessCommand(approveReservationPaymentCommand.reservationId))
         }
         return result(approveReservationPaymentCommand, paymentApprovalResult)
     }

@@ -215,7 +215,14 @@ class ReservationService(
         if (!approvalAllowed) throw ReservationRuleViolationException("유효한 선점 예매만 결제할 수 있습니다.")
         val amount = reservation.totalAmount
         if (amount <= 0) throw ReservationRuleViolationException("결제 금액은 양수여야 합니다.")
-        val paymentPreparation = reservationPaymentTransactionsUseCase.prepare(approveReservationPaymentCommand.reservationId, approveReservationPaymentCommand.attemptNumber, amount, approveReservationPaymentCommand.paymentKey)
+        val paymentPreparation = reservationPaymentTransactionsUseCase.prepare(
+            approveReservationPaymentCommand.reservationId,
+            approveReservationPaymentCommand.attemptNumber,
+            amount,
+            approveReservationPaymentCommand.paymentKey,
+            reservation.expiresAt,
+        )
+
         return PreparedReservationPayment(paymentPreparation, true)
     }
 
